@@ -65,7 +65,11 @@ function Search-GitHubExposure {
             Write-Verbose "[GitHub] Code search returned $($codeResponse.total_count) total results"
         }
         catch {
-            if ($_.Exception.Message -match '403') {
+            if ($_.Exception.Message -match '401') {
+                Write-Warning "[GitHub] Code search requires authentication. Use -GitHubToken to provide a personal access token."
+                break
+            }
+            elseif ($_.Exception.Message -match '403') {
                 Write-Warning "[GitHub] Rate limited on code search. Consider using -GitHubToken for higher limits."
             }
             else {

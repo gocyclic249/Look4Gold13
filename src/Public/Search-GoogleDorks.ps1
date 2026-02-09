@@ -97,17 +97,43 @@ function Search-GoogleDorks {
         }
     }
     else {
-        # Manual mode - generate clickable dork URLs
-        Write-Host "[Google] No API key configured. Generating dork URLs for manual review..." -ForegroundColor Yellow
+        # Manual mode - fetch dork URLs and check for results
+        Write-Host "[Google] No API key configured. Checking dork URLs directly..." -ForegroundColor Yellow
         Write-Host "[Google] Tip: Get a free API key at https://developers.google.com/custom-search/v1/introduction" -ForegroundColor Yellow
 
         foreach ($keyword in $Keywords) {
-            Write-Host "[Google] Dork URLs for '$keyword':" -ForegroundColor Gray
+            Write-Host "[Google] Checking dorks for '$keyword'..." -ForegroundColor Gray
             foreach ($template in $DorkTemplates) {
                 $query = $template -replace '\{keyword\}', $keyword
                 $encodedQuery = [System.Uri]::EscapeDataString($query)
                 $dorkUrl = "https://www.google.com/search?q=$encodedQuery&tbs=qdr:d$DaysBack"
-                Write-Host "  $dorkUrl" -ForegroundColor DarkGray
+
+                try {
+                    $webResponse = Invoke-WebRequest -Uri $dorkUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop -Headers @{
+                        'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                    $html = $webResponse.Content
+
+                    if ($html -match 'did not match any documents' -or $html -match 'No results found') {
+                        Write-Host "  [No Results] $query" -ForegroundColor DarkGray
+                    }
+                    else {
+                        Write-Host "  [Results Found] $query" -ForegroundColor Green
+                        $results += New-AU13Result `
+                            -Source 'Google-Dork' `
+                            -Keyword $keyword `
+                            -Title "Dork Hit: $query" `
+                            -Url $dorkUrl `
+                            -Snippet "Google returned results for this dork query - review in browser" `
+                            -Severity 'Review'
+                    }
+                }
+                catch {
+                    Write-Host "  [Error] $query - $($_.Exception.Message)" -ForegroundColor DarkYellow
+                }
+
+                # Delay between requests to avoid rate limiting
+                Start-Sleep -Seconds 2
             }
         }
     }

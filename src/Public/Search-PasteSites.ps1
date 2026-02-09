@@ -61,7 +61,12 @@ function Search-PasteSites {
             }
         }
         catch {
-            Write-Warning "[PasteSites] psbdmp.ws error for '$keyword': $($_.Exception.Message)"
+            if ($_.Exception.Message -match '404') {
+                Write-Verbose "[PasteSites] No psbdmp.ws results for '$keyword'"
+            }
+            else {
+                Write-Warning "[PasteSites] psbdmp.ws error for '$keyword': $($_.Exception.Message)"
+            }
         }
 
         # --- Fallback: generate manual search URLs for other paste sites ---
@@ -72,14 +77,9 @@ function Search-PasteSites {
             @{ Name = 'Dpaste';    Url = "https://www.google.com/search?q=site:dpaste.org+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" }
         )
 
+        Write-Host "[PasteSites] Manual search URLs for '$keyword':" -ForegroundColor Gray
         foreach ($site in $pasteSites) {
-            $results += New-AU13Result `
-                -Source "PasteSearch-$($site.Name)" `
-                -Keyword $keyword `
-                -Title "MANUAL: Search $($site.Name) for '$keyword'" `
-                -Url $site.Url `
-                -Snippet "Google-indexed paste search - open URL to review" `
-                -Severity 'Manual-Review'
+            Write-Host "  $($site.Name): $($site.Url)" -ForegroundColor DarkGray
         }
 
         Start-Sleep -Milliseconds 300
