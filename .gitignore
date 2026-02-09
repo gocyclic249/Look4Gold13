@@ -1,0 +1,22 @@
+# PowerShell
+*.ps1xml
+*.psm1.bak
+
+# Logs and output
+*.log
+/Output/
+/Reports/
+
+# Environment and secrets
+.env
+*.cred
+*.pfx
+*.key
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/settings.json
+.idea/

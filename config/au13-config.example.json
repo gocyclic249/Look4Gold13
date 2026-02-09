@@ -1,0 +1,12 @@
+{
+    "organizationName": "YourOrg",
+    "monitoringTargets": {
+        "domains": [],
+        "keywords": [],
+        "sensitivePatterns": []
+    },
+    "reporting": {
+        "outputPath": "./Output",
+        "format": "JSON"
+    }
+}
