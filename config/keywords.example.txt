@@ -1,0 +1,21 @@
+# AU-13 Keywords File Template
+# ================================================
+# Copy this file to the project root as 'keywords.txt'
+# and add your actual monitoring keywords.
+#
+# IMPORTANT: The real keywords.txt is gitignored
+# to prevent accidental disclosure.
+#
+# Format: One keyword or phrase per line
+# Lines starting with # are comments and ignored
+# Blank lines are ignored
+# ================================================
+
+# Example keywords (replace with your own):
+# CompanyName
+# internal-project-codename
+# sensitive-system-name
+# employee-name@company.com
+# 192.168.1.0/24
+# API-KEY-PREFIX
+# secret-document-title

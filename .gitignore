@@ -13,6 +13,12 @@
 *.pfx
 *.key
 
+# AU-13 Keyword files - NEVER commit these
+keywords.txt
+keywords.csv
+*.keywords
+config/au13-config.json
+
 # OS files
 Thumbs.db
 .DS_Store
