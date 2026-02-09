@@ -102,18 +102,12 @@ function Search-GoogleDorks {
         Write-Host "[Google] Tip: Get a free API key at https://developers.google.com/custom-search/v1/introduction" -ForegroundColor Yellow
 
         foreach ($keyword in $Keywords) {
+            Write-Host "[Google] Dork URLs for '$keyword':" -ForegroundColor Gray
             foreach ($template in $DorkTemplates) {
                 $query = $template -replace '\{keyword\}', $keyword
                 $encodedQuery = [System.Uri]::EscapeDataString($query)
                 $dorkUrl = "https://www.google.com/search?q=$encodedQuery&tbs=qdr:d$DaysBack"
-
-                $results += New-AU13Result `
-                    -Source 'Google-Dork' `
-                    -Keyword $keyword `
-                    -Title "MANUAL: $query" `
-                    -Url $dorkUrl `
-                    -Snippet "Open this URL in a browser to review results" `
-                    -Severity 'Manual-Review'
+                Write-Host "  $dorkUrl" -ForegroundColor DarkGray
             }
         }
     }
