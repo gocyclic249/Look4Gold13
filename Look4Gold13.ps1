@@ -331,7 +331,7 @@ function Search-DuckDuckGo {
                                 -Keyword $keyword `
                                 -Title $resultTitle `
                                 -Url $resultUrl `
-                                -Snippet "Found via DuckDuckGo: $($group.Label) dork" `
+                                -Snippet "DDG search: $ddgUrl" `
                                 -Severity 'Review'
                         }
                     }
@@ -363,57 +363,8 @@ function Search-PasteSites {
     )
 
     $results = @()
-    $cutoffDate = (Get-Date).AddDays(-$DaysBack)
 
     foreach ($keyword in $Keywords) {
-        try {
-            $encodedKeyword = [System.Uri]::EscapeDataString($keyword)
-            $uri = "https://psbdmp.ws/api/v3/search/$encodedKeyword"
-
-            Write-Verbose "[PasteSites] Querying psbdmp.ws for '$keyword'..."
-            $reqParams = @{
-                Uri         = $uri
-                Method      = 'Get'
-                TimeoutSec  = 15
-                ErrorAction = 'Stop'
-            }
-            $response = Invoke-RestMethodWithRetry -RequestParams $reqParams -MaxRetries 1 -BaseDelaySeconds 3
-
-            if ($response -and $response.Count -gt 0) {
-                foreach ($paste in $response) {
-                    $pasteDate = $null
-                    if ($paste.time) {
-                        try {
-                            $pasteDate = [DateTimeOffset]::FromUnixTimeSeconds($paste.time).DateTime
-                        }
-                        catch {
-                            $pasteDate = Get-Date
-                        }
-                    }
-
-                    if ($pasteDate -and $pasteDate -lt $cutoffDate) { continue }
-
-                    $pasteUrl = "https://pastebin.com/$($paste.id)"
-                    $results += New-AU13Result `
-                        -Source 'Pastebin' `
-                        -Keyword $keyword `
-                        -Title "Paste: $($paste.id)" `
-                        -Url $pasteUrl `
-                        -Snippet ($paste.text | Select-Object -First 1) `
-                        -DateFound $(if ($pasteDate) { $pasteDate.ToString('yyyy-MM-dd HH:mm:ss') } else { '' }) `
-                        -Severity 'High'
-                }
-            }
-        }
-        catch {
-            if ($_.Exception.Message -match '404') {
-                Write-Verbose "[PasteSites] No psbdmp.ws results for '$keyword'"
-            }
-            else {
-                Write-Warning "[PasteSites] psbdmp.ws error for '$keyword': $($_.Exception.Message)"
-            }
-        }
-
         $ddgBase = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/" -ProxyBase $ProxyBase
         $pasteSites = @(
             @{ Name = 'Pastebin';     Url = "${ddgBase}?q=site:pastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
@@ -430,11 +381,9 @@ function Search-PasteSites {
         foreach ($site in $pasteSites) {
             Write-Host "  $($site.Name): $($site.Url)" -ForegroundColor DarkGray
         }
-
-        Start-Sleep -Milliseconds 300
     }
 
-    Write-Host "[PasteSites] Found $($results.Count) results/links" -ForegroundColor Cyan
+    Write-Host "[PasteSites] Manual links printed above (paste sites also covered by DuckDuckGo scan)" -ForegroundColor Cyan
     return $results
 }
 
@@ -445,63 +394,96 @@ function Search-BreachInfo {
 
         [int]$DaysBack = 30,
 
+        [int]$DelaySeconds = 3,
+
         [string]$ProxyBase = ''
     )
 
     $results = @()
 
-    $breachSites = @(
-        'haveibeenpwned.com',
-        'krebsonsecurity.com',
-        'bleepingcomputer.com',
-        'securityweek.com',
-        'therecord.media',
-        'databreaches.net',
-        'breachdirectory.org',
-        'cybernews.com',
-        'hackread.com',
-        'securityaffairs.com',
-        'darkreading.com',
-        'thehackernews.com',
-        'schneier.com',
-        'grahamcluley.com',
-        'csoonline.com',
-        'infosecurity-magazine.com',
-        'arstechnica.com',
-        'reddit.com/r/netsec',
-        'reddit.com/r/cybersecurity'
+    # Breach/security sites grouped to keep DDG queries short
+    $breachGroups = @(
+        @{ Label = 'Breach DBs';        Query = 'site:haveibeenpwned.com OR site:databreaches.net OR site:breachdirectory.org' },
+        @{ Label = 'Security news (1)'; Query = 'site:krebsonsecurity.com OR site:bleepingcomputer.com OR site:therecord.media' },
+        @{ Label = 'Security news (2)'; Query = 'site:darkreading.com OR site:thehackernews.com OR site:securityweek.com' },
+        @{ Label = 'Security blogs';    Query = 'site:cybernews.com OR site:hackread.com OR site:securityaffairs.com OR site:schneier.com' },
+        @{ Label = 'Forums/media';      Query = 'site:reddit.com/r/netsec OR site:reddit.com/r/cybersecurity OR site:arstechnica.com' }
     )
 
+    Write-Host "[BreachInfo] Searching $($breachGroups.Count) site groups/keyword..." -ForegroundColor Cyan
+
     foreach ($keyword in $Keywords) {
-        $encodedKeyword = [System.Uri]::EscapeDataString("`"$keyword`"")
+        Write-Host "[BreachInfo] Searching for '$keyword'..." -ForegroundColor Gray
 
-        # --- DuckDuckGo searches across security blogs ---
-        $combinedSites = ($breachSites | ForEach-Object { "site:$_" }) -join ' OR '
-        $combinedUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/?q=$encodedKeyword+($([System.Uri]::EscapeDataString($combinedSites)))" -ProxyBase $ProxyBase
+        foreach ($group in $breachGroups) {
+            $query = "`"$keyword`" $($group.Query)"
+            $encodedQuery = [System.Uri]::EscapeDataString($query)
+            $ddgUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/?q=$encodedQuery" -ProxyBase $ProxyBase
 
-        $results += New-AU13Result `
-            -Source 'BreachBlogs-Combined' `
-            -Keyword $keyword `
-            -Title "MANUAL: Security blogs search for '$keyword'" `
-            -Url $combinedUrl `
-            -Snippet "Combined search across $($breachSites.Count) security/breach sites" `
-            -Severity 'Manual-Review'
+            try {
+                $reqParams = @{
+                    Uri             = $ddgUrl
+                    UseBasicParsing = $true
+                    TimeoutSec      = 15
+                    ErrorAction     = 'Stop'
+                    Headers         = @{
+                        'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                }
+                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $DelaySeconds
+                $html = $webResponse.Content
 
-        foreach ($site in @('haveibeenpwned.com', 'krebsonsecurity.com', 'bleepingcomputer.com')) {
-            $siteUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/?q=site:$site+$encodedKeyword" -ProxyBase $ProxyBase
-            $results += New-AU13Result `
-                -Source "BreachBlog-$site" `
-                -Keyword $keyword `
-                -Title "MANUAL: Search $site for '$keyword'" `
-                -Url $siteUrl `
-                -Snippet "Search $site for keyword mentions" `
-                -Severity 'Manual-Review'
+                # Detect CAPTCHA
+                if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal' -or $html -match 'cc=botnet') {
+                    Write-Host "  [CAPTCHA] DDG rate limit hit - pausing 30s..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds 30
+                    $webResponse = Invoke-WebRequest @reqParams
+                    $html = $webResponse.Content
+                    if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal') {
+                        Write-Host "  [CAPTCHA] Still blocked - skipping remaining groups for '$keyword'" -ForegroundColor Red
+                        break
+                    }
+                }
+
+                if ($html -match 'too long') {
+                    Write-Host "  [Query Too Long] $($group.Label)" -ForegroundColor DarkYellow
+                }
+                elseif ($html -match 'No results' -or $html -match 'No more results' -or $html -notmatch 'result__a') {
+                    Write-Host "  [No Results] $($group.Label)" -ForegroundColor DarkGray
+                }
+                else {
+                    $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
+
+                    if ($linkMatches.Count -gt 0) {
+                        Write-Host "  [Results: $($linkMatches.Count)] $($group.Label)" -ForegroundColor Green
+                        foreach ($match in $linkMatches) {
+                            $resultUrl = $match.Groups[1].Value
+                            $resultTitle = $match.Groups[2].Value.Trim()
+
+                            if ($resultUrl -match 'uddg=([^&]+)') {
+                                $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
+                            }
+
+                            $results += New-AU13Result `
+                                -Source "BreachBlog" `
+                                -Keyword $keyword `
+                                -Title $resultTitle `
+                                -Url $resultUrl `
+                                -Snippet "DDG search: $ddgUrl" `
+                                -Severity 'High'
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Host "  [Error] $($group.Label) - $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+
+            Start-Sleep -Seconds $DelaySeconds
         }
-
-        Start-Sleep -Milliseconds 300
     }
 
-    Write-Host "[BreachInfo] Found $($results.Count) results/links" -ForegroundColor Cyan
+    Write-Host "[BreachInfo] Found $($results.Count) results" -ForegroundColor Cyan
     return $results
 }
 
@@ -644,7 +626,15 @@ function Export-AU13Html {
             $url   = [System.Web.HttpUtility]::HtmlEncode($r.Url)
             $src   = [System.Web.HttpUtility]::HtmlEncode($r.Source)
             $sev   = $r.Severity
-            $snip  = [System.Web.HttpUtility]::HtmlEncode($r.Snippet)
+
+            # Render DDG search URLs as clickable links in the snippet
+            if ($r.Snippet -match '^DDG search: (.+)$') {
+                $searchUrl = [System.Web.HttpUtility]::HtmlEncode($Matches[1])
+                $snip = "Found via: <a href=`"$searchUrl`" target=`"_blank`">DDG search</a>"
+            }
+            else {
+                $snip = [System.Web.HttpUtility]::HtmlEncode($r.Snippet)
+            }
 
             $sevColor = switch ($sev) {
                 'Critical'      { '#dc3545' }
@@ -876,7 +866,7 @@ if ('Paste' -in $Sources) {
 # --- Breach Info ---
 if ('Breach' -in $Sources) {
     Write-Host "=== Scanning Breach Sources... ===" -ForegroundColor White
-    $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack -ProxyBase $proxyBase
+    $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase
     $allResults += $breachResults
     Write-Host ""
 }
