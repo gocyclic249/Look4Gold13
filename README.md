@@ -89,7 +89,7 @@ Use the `-Silent` flag with parameters for automated/scheduled runs:
 
 | Source | Method | Auth Required |
 |---|---|---|
-| **DuckDuckGo** | HTML lite endpoint with `site:` and `filetype:` dorks (includes `site:github.com`) | No |
+| **DuckDuckGo** | HTML lite endpoint with grouped `site:` and `filetype:` OR queries (4 queries per keyword) with CAPTCHA detection and retry | No |
 | **Paste Sites** | psbdmp.ws API + DuckDuckGo-indexed paste sites (Pastebin, Paste.ee, Ghostbin, Dpaste, Rentry, JustPaste.it, ControlC, PrivateBin) | No |
 | **Breach Info** | DuckDuckGo searches across 19 security/breach blogs and forums | No |
 
@@ -101,7 +101,7 @@ haveibeenpwned.com, krebsonsecurity.com, bleepingcomputer.com, securityweek.com,
 
 ## GenAI Summarization
 
-When a GenAI API token is configured, the scanner sends results **per keyword** to Ask Sage for AI-powered analysis. Each keyword section in the HTML report will include:
+When a GenAI API token is configured, the scanner sends results **per keyword** to [Ask Sage](https://api.genai.army.mil) for AI-powered analysis. Each keyword section in the HTML report will include:
 
 - Risk assessment
 - Key findings summary
@@ -109,27 +109,70 @@ When a GenAI API token is configured, the scanner sends results **per keyword** 
 
 The AI summary appears in a blue callout box below each keyword's results in the report.
 
-### Setup
-
-1. Get an API key from [Ask Sage](https://asksage.ai/) (Settings > Account > Manage API Keys)
-2. Set the environment variable:
-   ```powershell
-   [System.Environment]::SetEnvironmentVariable("GENAI_API_TOKEN", "your-key", "User")
-   # Restart PowerShell after setting User-level env vars
-   ```
-3. Or just paste it when prompted in interactive mode
-
 Without a token, the scanner runs normally but skips AI summaries.
+
+### Getting an API Key
+
+1. Navigate to [Ask Sage](https://api.genai.army.mil)
+2. Go to **Settings** > **Account** tab
+3. Scroll to **Manage your API Keys** in the sidebar
+4. Generate a new API key
+
+> **Security:** Treat your API key like a password and rotate it regularly. See the full [Ask Sage API Documentation](https://api.genai.army.mil/documentation/docs/api-documentation/api-documentation.html) for details.
+
+### Setting the Environment Variable
+
+Set the token as a persistent Windows user environment variable so the script picks it up automatically:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("GENAI_API_TOKEN", "your-key", "User")
+# Restart PowerShell after setting User-level env vars
+```
+
+Verify it's set:
+
+```powershell
+[System.Environment]::GetEnvironmentVariable("GENAI_API_TOKEN", "User")
+```
+
+Alternatively, in **interactive mode** the script will prompt you to paste a token if `$env:GENAI_API_TOKEN` is not set. This is useful for one-off runs without persisting the key.
 
 ## Config File
 
-The config file (`config/au13-config.json`) controls GenAI and search settings. Copy the example to get started:
+The config file lets you override the script's built-in defaults for GenAI and search settings. **The config file is entirely optional** — if it doesn't exist, the script uses its own hardcoded defaults and runs normally.
+
+### How the Script Resolves Settings
+
+1. The script starts with **built-in defaults** (30-day lookback, 3s delay, all sources, etc.)
+2. If a config file exists, any settings in it **override** the matching defaults — settings you omit stay at their default values
+3. Command-line parameters (`-DaysBack`, `-Sources`, etc.) **override** both the config file and defaults
+
+The script looks for the config file at `config/au13-config.json` by default. To use a different path:
+
+```powershell
+.\Look4Gold13.ps1 -ConfigFile "./my-config.json"
+```
+
+### Creating a Config File
+
+Copy the example to get started:
 
 ```powershell
 Copy-Item config/au13-config.example.json config/au13-config.json
+# Edit config/au13-config.json — only include settings you want to change
 ```
 
-### Config Options
+You don't need to include every setting. For example, to only change the delay:
+
+```json
+{
+    "search": {
+        "delaySeconds": 5
+    }
+}
+```
+
+### All Config Options
 
 ```json
 {
@@ -144,26 +187,24 @@ Copy-Item config/au13-config.example.json config/au13-config.json
     },
     "search": {
         "daysBack": 30,
-        "delaySeconds": 2,
+        "delaySeconds": 3,
         "sources": ["DuckDuckGo", "Paste", "Breach"]
     }
 }
 ```
 
-| Setting | Description |
-|---|---|
-| `genai.endpoint` | GenAI API URL (change if using a different provider) |
-| `genai.tokenEnvVar` | Name of the environment variable holding the API token |
-| `genai.model` | Model to use for summarization |
-| `genai.persona` | Ask Sage persona ID |
-| `genai.temperature` | Response creativity (0.0 = deterministic, 1.0 = creative) |
-| `genai.limit_references` | Max references returned by AI |
-| `genai.live` | Enable web search in AI responses (1 = on, 0 = off) |
-| `search.daysBack` | Default days back for searches |
-| `search.delaySeconds` | Delay between DuckDuckGo requests |
-| `search.sources` | Default sources to scan |
-
-All settings have built-in defaults. The config file is optional — only include the settings you want to override.
+| Setting | Default | Description |
+|---|---|---|
+| `genai.endpoint` | `https://api.genai.army.mil/server/query` | Ask Sage API endpoint |
+| `genai.tokenEnvVar` | `GENAI_API_TOKEN` | Environment variable name holding the API key |
+| `genai.model` | `google-claude-45-sonnet` | Model to use for summarization |
+| `genai.persona` | `5` | Ask Sage persona ID |
+| `genai.temperature` | `0.7` | Response creativity (0.0 = deterministic, 1.0 = creative) |
+| `genai.limit_references` | `5` | Max references returned by AI |
+| `genai.live` | `1` | Enable web search in AI responses (1 = on, 0 = off) |
+| `search.daysBack` | `30` | Default days back for searches |
+| `search.delaySeconds` | `3` | Delay between DuckDuckGo requests (3+ recommended to avoid CAPTCHA) |
+| `search.sources` | `["DuckDuckGo", "Paste", "Breach"]` | Default sources to scan |
 
 ## Output
 

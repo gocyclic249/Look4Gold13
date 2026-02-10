@@ -181,7 +181,7 @@ function Import-AU13Config {
         }
         search = @{
             daysBack     = 30
-            delaySeconds = 2
+            delaySeconds = 3
             sources      = @('DuckDuckGo', 'Paste', 'Breach')
         }
     }
@@ -233,33 +233,22 @@ function Search-DuckDuckGo {
 
     $results = @()
 
-    # DuckDuckGo dork templates — DDG supports site: and filetype: operators
-    $dorkTemplates = @(
-        '"{keyword}" site:pastebin.com',
-        '"{keyword}" site:github.com',
-        '"{keyword}" site:trello.com',
-        '"{keyword}" site:paste.ee',
-        '"{keyword}" site:dpaste.org',
-        '"{keyword}" site:rentry.co',
-        '"{keyword}" site:justpaste.it',
-        '"{keyword}" site:controlc.com',
-        '"{keyword}" site:privatebin.net',
-        '"{keyword}" filetype:pdf',
-        '"{keyword}" filetype:xlsx',
-        '"{keyword}" filetype:csv',
-        '"{keyword}" filetype:doc',
-        '"{keyword}" filetype:conf',
-        '"{keyword}" filetype:log',
-        '"{keyword}" filetype:sql',
-        '"{keyword}" filetype:env'
+    # Grouped dork queries — combines related site:/filetype: with OR to reduce
+    # request count from 17 per keyword to 4, avoiding DDG CAPTCHA rate limits.
+    $dorkGroups = @(
+        @{ Label = 'Paste sites';     Query = '(site:pastebin.com OR site:paste.ee OR site:dpaste.org OR site:rentry.co OR site:justpaste.it OR site:controlc.com OR site:privatebin.net)' },
+        @{ Label = 'Code/project';    Query = '(site:github.com OR site:trello.com)' },
+        @{ Label = 'Documents';       Query = '(filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:doc)' },
+        @{ Label = 'Config/sensitive'; Query = '(filetype:conf OR filetype:log OR filetype:sql OR filetype:env)' }
     )
 
-    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint..." -ForegroundColor Cyan
+    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($dorkGroups.Count) queries per keyword)..." -ForegroundColor Cyan
 
     foreach ($keyword in $Keywords) {
-        Write-Host "[DuckDuckGo] Checking dorks for '$keyword'..." -ForegroundColor Gray
-        foreach ($template in $dorkTemplates) {
-            $query = $template -replace '\{keyword\}', $keyword
+        Write-Host "[DuckDuckGo] Searching for '$keyword'..." -ForegroundColor Gray
+
+        foreach ($group in $dorkGroups) {
+            $query = "`"$keyword`" $($group.Query)"
             $encodedQuery = [System.Uri]::EscapeDataString($query)
             $ddgUrl = "https://html.duckduckgo.com/html/?q=$encodedQuery"
 
@@ -276,16 +265,29 @@ function Search-DuckDuckGo {
                 $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $DelaySeconds
                 $html = $webResponse.Content
 
+                # Detect DDG CAPTCHA/bot block (HTTP 202 with "select all squares")
+                if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal' -or $html -match 'cc=botnet') {
+                    Write-Host "  [CAPTCHA] DDG rate limit hit - pausing 30s before continuing..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds 30
+                    # Retry once after cooldown
+                    $webResponse = Invoke-WebRequest @reqParams
+                    $html = $webResponse.Content
+                    if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal') {
+                        Write-Host "  [CAPTCHA] Still blocked - skipping remaining dorks for '$keyword'" -ForegroundColor Red
+                        break
+                    }
+                }
+
                 # DDG lite returns result links in <a class="result__a"> tags
                 if ($html -match 'No results' -or $html -match 'No more results' -or $html -notmatch 'result__a') {
-                    Write-Host "  [No Results] $query" -ForegroundColor DarkGray
+                    Write-Host "  [No Results] $($group.Label)" -ForegroundColor DarkGray
                 }
                 else {
                     # Extract result links from DDG HTML
                     $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
 
                     if ($linkMatches.Count -gt 0) {
-                        Write-Host "  [Results: $($linkMatches.Count)] $query" -ForegroundColor Green
+                        Write-Host "  [Results: $($linkMatches.Count)] $($group.Label)" -ForegroundColor Green
                         foreach ($match in $linkMatches) {
                             $resultUrl = $match.Groups[1].Value
                             $resultTitle = $match.Groups[2].Value.Trim()
@@ -300,17 +302,17 @@ function Search-DuckDuckGo {
                                 -Keyword $keyword `
                                 -Title $resultTitle `
                                 -Url $resultUrl `
-                                -Snippet "Found via DuckDuckGo dork: $query" `
+                                -Snippet "Found via DuckDuckGo: $($group.Label) dork" `
                                 -Severity 'Review'
                         }
                     }
                     else {
-                        Write-Host "  [Parse Error] $query - could not extract links" -ForegroundColor DarkYellow
+                        Write-Host "  [Parse Error] $($group.Label) - could not extract links" -ForegroundColor DarkYellow
                     }
                 }
             }
             catch {
-                Write-Host "  [Error] $query - $($_.Exception.Message)" -ForegroundColor DarkYellow
+                Write-Host "  [Error] $($group.Label) - $($_.Exception.Message)" -ForegroundColor DarkYellow
             }
 
             Start-Sleep -Seconds $DelaySeconds
