@@ -89,7 +89,7 @@ Use the `-Silent` flag with parameters for automated/scheduled runs:
 
 | Source | Method | Auth Required |
 |---|---|---|
-| **DuckDuckGo** | HTML lite endpoint with `site:` and `filetype:` dorks (includes `site:github.com`) | No |
+| **DuckDuckGo** | HTML lite endpoint with grouped `site:` and `filetype:` OR queries (4 queries per keyword) with CAPTCHA detection and retry | No |
 | **Paste Sites** | psbdmp.ws API + DuckDuckGo-indexed paste sites (Pastebin, Paste.ee, Ghostbin, Dpaste, Rentry, JustPaste.it, ControlC, PrivateBin) | No |
 | **Breach Info** | DuckDuckGo searches across 19 security/breach blogs and forums | No |
 
@@ -144,7 +144,7 @@ Copy-Item config/au13-config.example.json config/au13-config.json
     },
     "search": {
         "daysBack": 30,
-        "delaySeconds": 2,
+        "delaySeconds": 3,
         "sources": ["DuckDuckGo", "Paste", "Breach"]
     }
 }
@@ -160,7 +160,7 @@ Copy-Item config/au13-config.example.json config/au13-config.json
 | `genai.limit_references` | Max references returned by AI |
 | `genai.live` | Enable web search in AI responses (1 = on, 0 = off) |
 | `search.daysBack` | Default days back for searches |
-| `search.delaySeconds` | Delay between DuckDuckGo requests |
+| `search.delaySeconds` | Delay between DuckDuckGo requests (3+ recommended to avoid CAPTCHA) |
 | `search.sources` | Default sources to scan |
 
 All settings have built-in defaults. The config file is optional — only include the settings you want to override.

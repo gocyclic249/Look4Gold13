@@ -10,7 +10,7 @@
     },
     "search": {
         "daysBack": 30,
-        "delaySeconds": 2,
+        "delaySeconds": 3,
         "sources": ["DuckDuckGo", "Paste", "Breach"]
     }
 }
