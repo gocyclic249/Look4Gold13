@@ -279,7 +279,7 @@ function Search-PasteSites {
             $uri = "https://psbdmp.ws/api/v3/search/$encodedKeyword"
 
             Write-Verbose "[PasteSites] Querying psbdmp.ws for '$keyword'..."
-            $response = Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 15 -ErrorAction Stop
+            $response = Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 30 -ErrorAction Stop
 
             if ($response -and $response.Count -gt 0) {
                 foreach ($paste in $response) {
@@ -392,7 +392,7 @@ function Search-GitHubExposure {
             }
         }
 
-        Start-Sleep -Seconds 6
+        Start-Sleep -Seconds 10
 
         # --- Commits search ---
         try {
@@ -427,7 +427,7 @@ function Search-GitHubExposure {
             }
         }
 
-        Start-Sleep -Seconds 6
+        Start-Sleep -Seconds 10
 
         # --- Issues search ---
         try {
@@ -458,7 +458,7 @@ function Search-GitHubExposure {
             }
         }
 
-        Start-Sleep -Seconds 6
+        Start-Sleep -Seconds 10
     }
 
     Write-Host "[GitHub] Found $($results.Count) results" -ForegroundColor Cyan
@@ -492,36 +492,15 @@ function Search-BreachInfo {
     foreach ($keyword in $Keywords) {
         $encodedKeyword = [System.Uri]::EscapeDataString("`"$keyword`"")
 
-        # --- Have I Been Pwned (free API - breach list only) ---
-        try {
-            $hibpUri = "https://haveibeenpwned.com/api/v3/breaches"
-            Write-Verbose "[BreachInfo] Checking HIBP breach list for '$keyword'..."
-
-            $hibpResponse = Invoke-RestMethod -Uri $hibpUri -Method Get `
-                -Headers @{ 'User-Agent' = 'Look4Gold13-AU13-Scanner' } `
-                -TimeoutSec 15 -ErrorAction Stop
-
-            $matches = $hibpResponse | Where-Object {
-                $_.Name -match [regex]::Escape($keyword) -or
-                $_.Title -match [regex]::Escape($keyword) -or
-                $_.Domain -match [regex]::Escape($keyword) -or
-                $_.Description -match [regex]::Escape($keyword)
-            }
-
-            foreach ($breach in $matches) {
-                $results += New-AU13Result `
-                    -Source 'HIBP-Breach' `
-                    -Keyword $keyword `
-                    -Title "Breach: $($breach.Title) ($($breach.BreachDate))" `
-                    -Url "https://haveibeenpwned.com/PwnedWebsites#$($breach.Name)" `
-                    -Snippet "Domain: $($breach.Domain) | Records: $($breach.PwnCount) | Data: $($breach.DataClasses -join ', ')" `
-                    -DateFound $breach.BreachDate `
-                    -Severity 'Critical'
-            }
-        }
-        catch {
-            Write-Warning "[BreachInfo] HIBP check error: $($_.Exception.Message)"
-        }
+        # --- Have I Been Pwned (search via DuckDuckGo - HIBP API now requires paid key) ---
+        $hibpSearchUrl = "https://html.duckduckgo.com/html/?q=site:haveibeenpwned.com+$encodedKeyword"
+        $results += New-AU13Result `
+            -Source 'HIBP-Search' `
+            -Keyword $keyword `
+            -Title "HIBP: Search haveibeenpwned.com for '$keyword'" `
+            -Url $hibpSearchUrl `
+            -Snippet "Search Have I Been Pwned for breach mentions (HIBP API requires paid subscription)" `
+            -Severity 'Review'
 
         # --- DuckDuckGo searches across security blogs ---
         $combinedSites = ($breachSites | ForEach-Object { "site:$_" }) -join ' OR '
