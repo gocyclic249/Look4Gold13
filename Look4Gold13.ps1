@@ -5,7 +5,10 @@
     Scans multiple sources for unauthorized disclosure of organizational
     information per NIST SP 800-53 AU-13.
 
-    Sources: Google Dorks, Paste Sites, GitHub, Breach/Security Blogs
+    Sources: DuckDuckGo, Paste Sites, GitHub, Breach/Security Blogs
+
+    After scanning, sends results per keyword to a GenAI API (Ask Sage)
+    for summarization. The AI summary is embedded in the HTML report.
 
     Two modes:
       Interactive (default) - prompts for all settings
@@ -18,7 +21,7 @@
     # Silent mode - no prompts, uses flags
 .EXAMPLE
     .\Look4Gold13.ps1 -Silent -DaysBack 7 -Sources GitHub,Breach
-    # Silent mode with specific sources (reads token from $env:GITHUB_TOKEN)
+    # Silent mode with specific sources (reads tokens from env vars)
 #>
 param(
     [switch]$Silent,
@@ -29,7 +32,9 @@ param(
 
     [string]$OutputFile,
 
-    [ValidateSet('Google', 'Paste', 'GitHub', 'Breach')]
+    [string]$ConfigFile,
+
+    [ValidateSet('DuckDuckGo', 'Paste', 'GitHub', 'Breach')]
     [string[]]$Sources,
 
     [string]$GitHubToken
@@ -44,14 +49,13 @@ function Get-DateFilter {
         [Parameter(Mandatory)]
         [int]$DaysBack,
 
-        [ValidateSet('Google', 'GitHub', 'Unix')]
-        [string]$Format = 'Google'
+        [ValidateSet('GitHub', 'Unix')]
+        [string]$Format = 'GitHub'
     )
 
     $targetDate = (Get-Date).AddDays(-$DaysBack)
 
     switch ($Format) {
-        'Google' { return "d$DaysBack" }
         'GitHub' { return $targetDate.ToString('yyyy-MM-dd') }
         'Unix'   { return [int][double]::Parse((Get-Date $targetDate -UFormat %s)) }
     }
@@ -107,24 +111,81 @@ function Import-AU13Keywords {
     return $keywords
 }
 
+function Import-AU13Config {
+    param(
+        [string]$Path
+    )
+
+    if (-not $Path) {
+        $Path = Join-Path $PSScriptRoot "config/au13-config.json"
+    }
+
+    # Default config values
+    $defaults = @{
+        genai = @{
+            endpoint         = 'https://api.asksage.ai/server/query'
+            tokenEnvVar      = 'GENAI_API_TOKEN'
+            model            = 'google-claude-45-sonnet'
+            persona          = 5
+            temperature      = 0.7
+            limit_references = 5
+            live             = 1
+        }
+        search = @{
+            daysBack     = 30
+            delaySeconds = 2
+            sources      = @('DuckDuckGo', 'Paste', 'GitHub', 'Breach')
+        }
+    }
+
+    if (Test-Path $Path) {
+        try {
+            $fileConfig = Get-Content -Path $Path -Raw | ConvertFrom-Json
+
+            # Merge genai settings
+            if ($fileConfig.genai) {
+                foreach ($prop in $fileConfig.genai.PSObject.Properties) {
+                    $defaults.genai[$prop.Name] = $prop.Value
+                }
+            }
+
+            # Merge search settings
+            if ($fileConfig.search) {
+                foreach ($prop in $fileConfig.search.PSObject.Properties) {
+                    $defaults.search[$prop.Name] = $prop.Value
+                }
+            }
+
+            Write-Verbose "Loaded config from $Path"
+        }
+        catch {
+            Write-Warning "Failed to parse config file '$Path': $($_.Exception.Message). Using defaults."
+        }
+    }
+    else {
+        Write-Verbose "No config file at '$Path'. Using defaults."
+    }
+
+    return $defaults
+}
+
 # ============================================================================
 # SEARCH FUNCTIONS
 # ============================================================================
 
-function Search-GoogleDorks {
+function Search-DuckDuckGo {
     param(
         [Parameter(Mandatory)]
         [string[]]$Keywords,
 
-        [int]$DaysBack = 30
+        [int]$DaysBack = 30,
+
+        [int]$DelaySeconds = 2
     )
 
     $results = @()
 
-    # Google dork templates using site: and filetype: operators.
-    # These search regular google.com directly (no API needed).
-    # Limitation: Google may rate-limit or CAPTCHA automated requests.
-    # Results marked [Error] can still be opened manually in a browser.
+    # DuckDuckGo dork templates — DDG supports site: and filetype: operators
     $dorkTemplates = @(
         '"{keyword}" site:pastebin.com',
         '"{keyword}" site:github.com',
@@ -141,54 +202,63 @@ function Search-GoogleDorks {
         '"{keyword}" filetype:env'
     )
 
-    Write-Host "[Google] Searching dork URLs directly (no API)..." -ForegroundColor Cyan
-    Write-Host "[Google] Note: Google may rate-limit or CAPTCHA these requests." -ForegroundColor Yellow
-    Write-Host "[Google] Dork URLs are included in the report for manual browser review." -ForegroundColor Yellow
+    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint..." -ForegroundColor Cyan
 
     foreach ($keyword in $Keywords) {
-        Write-Host "[Google] Checking dorks for '$keyword'..." -ForegroundColor Gray
+        Write-Host "[DuckDuckGo] Checking dorks for '$keyword'..." -ForegroundColor Gray
         foreach ($template in $dorkTemplates) {
             $query = $template -replace '\{keyword\}', $keyword
             $encodedQuery = [System.Uri]::EscapeDataString($query)
-            $dorkUrl = "https://www.google.com/search?q=$encodedQuery&tbs=qdr:d$DaysBack"
+            $ddgUrl = "https://html.duckduckgo.com/html/?q=$encodedQuery"
 
             try {
-                $webResponse = Invoke-WebRequest -Uri $dorkUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop -Headers @{
+                $webResponse = Invoke-WebRequest -Uri $ddgUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop -Headers @{
                     'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                 }
                 $html = $webResponse.Content
 
-                if ($html -match 'did not match any documents' -or $html -match 'No results found') {
+                # DDG lite returns result links in <a class="result__a"> tags
+                if ($html -match 'No results' -or $html -match 'No more results' -or $html -notmatch 'result__a') {
                     Write-Host "  [No Results] $query" -ForegroundColor DarkGray
                 }
                 else {
-                    Write-Host "  [Results Found] $query" -ForegroundColor Green
-                    $results += New-AU13Result `
-                        -Source 'Google-Dork' `
-                        -Keyword $keyword `
-                        -Title "Dork Hit: $query" `
-                        -Url $dorkUrl `
-                        -Snippet "Google returned results for this dork query - review in browser" `
-                        -Severity 'Review'
+                    # Extract result links from DDG HTML
+                    $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
+
+                    if ($linkMatches.Count -gt 0) {
+                        Write-Host "  [Results: $($linkMatches.Count)] $query" -ForegroundColor Green
+                        foreach ($match in $linkMatches) {
+                            $resultUrl = $match.Groups[1].Value
+                            $resultTitle = $match.Groups[2].Value.Trim()
+
+                            # DDG sometimes wraps URLs in a redirect — extract the real URL
+                            if ($resultUrl -match 'uddg=([^&]+)') {
+                                $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
+                            }
+
+                            $results += New-AU13Result `
+                                -Source 'DuckDuckGo' `
+                                -Keyword $keyword `
+                                -Title $resultTitle `
+                                -Url $resultUrl `
+                                -Snippet "Found via DuckDuckGo dork: $query" `
+                                -Severity 'Review'
+                        }
+                    }
+                    else {
+                        Write-Host "  [Parse Error] $query - could not extract links" -ForegroundColor DarkYellow
+                    }
                 }
             }
             catch {
                 Write-Host "  [Error] $query - $($_.Exception.Message)" -ForegroundColor DarkYellow
-                # Still include the dork URL in results so the user can open it manually
-                $results += New-AU13Result `
-                    -Source 'Google-Dork' `
-                    -Keyword $keyword `
-                    -Title "MANUAL: $query" `
-                    -Url $dorkUrl `
-                    -Snippet "Automated check failed (likely rate-limited) - open this URL in a browser to review" `
-                    -Severity 'Manual-Review'
             }
 
-            Start-Sleep -Seconds 2
+            Start-Sleep -Seconds $DelaySeconds
         }
     }
 
-    Write-Host "[Google] Found $($results.Count) results/dorks" -ForegroundColor Cyan
+    Write-Host "[DuckDuckGo] Found $($results.Count) results" -ForegroundColor Cyan
     return $results
 }
 
@@ -247,10 +317,10 @@ function Search-PasteSites {
         }
 
         $pasteSites = @(
-            @{ Name = 'Pastebin';  Url = "https://www.google.com/search?q=site:pastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
-            @{ Name = 'Paste.ee';  Url = "https://www.google.com/search?q=site:paste.ee+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
-            @{ Name = 'Ghostbin';  Url = "https://www.google.com/search?q=site:ghostbin.com+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
-            @{ Name = 'Dpaste';    Url = "https://www.google.com/search?q=site:dpaste.org+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" }
+            @{ Name = 'Pastebin';  Url = "https://html.duckduckgo.com/html/?q=site:pastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Paste.ee';  Url = "https://html.duckduckgo.com/html/?q=site:paste.ee+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Ghostbin';  Url = "https://html.duckduckgo.com/html/?q=site:ghostbin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Dpaste';    Url = "https://html.duckduckgo.com/html/?q=site:dpaste.org+%22$([System.Uri]::EscapeDataString($keyword))%22" }
         )
 
         Write-Host "[PasteSites] Manual search URLs for '$keyword':" -ForegroundColor Gray
@@ -453,9 +523,9 @@ function Search-BreachInfo {
             Write-Warning "[BreachInfo] HIBP check error: $($_.Exception.Message)"
         }
 
-        # --- Google searches across security blogs ---
+        # --- DuckDuckGo searches across security blogs ---
         $combinedSites = ($breachSites | ForEach-Object { "site:$_" }) -join ' OR '
-        $combinedUrl = "https://www.google.com/search?q=$encodedKeyword+($([System.Uri]::EscapeDataString($combinedSites)))&tbs=qdr:d$DaysBack"
+        $combinedUrl = "https://html.duckduckgo.com/html/?q=$encodedKeyword+($([System.Uri]::EscapeDataString($combinedSites)))"
 
         $results += New-AU13Result `
             -Source 'BreachBlogs-Combined' `
@@ -466,7 +536,7 @@ function Search-BreachInfo {
             -Severity 'Manual-Review'
 
         foreach ($site in @('haveibeenpwned.com', 'krebsonsecurity.com', 'bleepingcomputer.com')) {
-            $siteUrl = "https://www.google.com/search?q=site:$site+$encodedKeyword&tbs=qdr:d$DaysBack"
+            $siteUrl = "https://html.duckduckgo.com/html/?q=site:$site+$encodedKeyword"
             $results += New-AU13Result `
                 -Source "BreachBlog-$site" `
                 -Keyword $keyword `
@@ -484,6 +554,80 @@ function Search-BreachInfo {
 }
 
 # ============================================================================
+# GENAI SUMMARIZATION
+# ============================================================================
+
+function Invoke-GenAISummary {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Keyword,
+
+        [Parameter(Mandatory)]
+        [PSCustomObject[]]$Results,
+
+        [Parameter(Mandatory)]
+        [hashtable]$GenAIConfig
+    )
+
+    $token = [System.Environment]::GetEnvironmentVariable($GenAIConfig.tokenEnvVar)
+    if (-not $token) {
+        return "GenAI summary unavailable - $($GenAIConfig.tokenEnvVar) environment variable not set."
+    }
+
+    $headers = @{
+        'x-access-tokens' = $token
+        'Content-Type'    = 'application/json'
+    }
+
+    # Build a concise summary of findings for the AI
+    $resultSummary = $Results | ForEach-Object {
+        "- [$($_.Severity)] $($_.Source): $($_.Title) | URL: $($_.Url) | $($_.Snippet)"
+    }
+    $resultText = $resultSummary -join "`n"
+
+    $prompt = @"
+You are an AU-13 compliance analyst. Analyze the following scan results for the keyword "$Keyword" and provide:
+1. A brief risk assessment (1-2 sentences)
+2. Key findings summary (bullet points)
+3. Recommended actions
+
+Scan Results:
+$resultText
+"@
+
+    $body = @{
+        message          = $prompt
+        persona          = $GenAIConfig.persona
+        model            = $GenAIConfig.model
+        temperature      = $GenAIConfig.temperature
+        limit_references = $GenAIConfig.limit_references
+        live             = $GenAIConfig.live
+    } | ConvertTo-Json -Depth 3
+
+    try {
+        Write-Host "[GenAI] Summarizing results for '$Keyword'..." -ForegroundColor Cyan
+        $response = Invoke-RestMethod -Uri $GenAIConfig.endpoint `
+            -Method Post `
+            -Headers $headers `
+            -Body $body `
+            -TimeoutSec 300
+
+        Start-Sleep -Seconds 3
+
+        if ($response.message) {
+            return $response.message
+        }
+        else {
+            return "GenAI returned an empty response."
+        }
+    }
+    catch {
+        Write-Warning "[GenAI] Error summarizing '$Keyword': $($_.Exception.Message)"
+        return "GenAI summary failed: $($_.Exception.Message)"
+    }
+}
+
+# ============================================================================
 # HTML REPORT EXPORT
 # ============================================================================
 
@@ -498,7 +642,9 @@ function Export-AU13Html {
 
         [int]$DaysBack,
 
-        [string[]]$Sources
+        [string[]]$Sources,
+
+        [hashtable]$AISummaries = @{}
     )
 
     if (-not $OutputPath) {
@@ -565,6 +711,18 @@ function Export-AU13Html {
             }
         }
 
+        # AI Summary block for this keyword
+        $aiBlock = ""
+        if ($AISummaries.ContainsKey($kwGroup.Name)) {
+            $aiText = [System.Web.HttpUtility]::HtmlEncode($AISummaries[$kwGroup.Name]) -replace "`n", "<br>"
+            $aiBlock = @"
+            <div class="ai-summary">
+                <h3>AI Analysis</h3>
+                <div class="ai-content">$aiText</div>
+            </div>
+"@
+        }
+
         $keywordBlocks += @"
         <div class="query-block">
             <h2>Query: &quot;$kw&quot;</h2>
@@ -572,6 +730,7 @@ function Export-AU13Html {
             <ul>
 $listItems
             </ul>
+$aiBlock
         </div>
 
 "@
@@ -601,6 +760,9 @@ $listItems
         .query-block a { color: #0d6efd; text-decoration: none; }
         .query-block a:hover { text-decoration: underline; }
         .query-block small { color: #777; }
+        .ai-summary { background: #f0f4ff; border-left: 4px solid #4a6cf7; padding: 12px 16px; margin-top: 12px; border-radius: 0 4px 4px 0; }
+        .ai-summary h3 { margin: 0 0 8px 0; color: #4a6cf7; font-size: 0.95em; }
+        .ai-content { font-size: 0.9em; line-height: 1.5; color: #444; }
         .footer { margin-top: 30px; text-align: center; font-size: 0.85em; color: #999; }
     </style>
 </head>
@@ -649,6 +811,9 @@ $banner = @"
 "@
 Write-Host $banner -ForegroundColor Yellow
 
+# --- Load config file ---
+$config = Import-AU13Config -Path $ConfigFile
+
 # --- Resolve GitHub Token (REQUIRED) ---
 if (-not $GitHubToken) {
     $GitHubToken = $env:GITHUB_TOKEN
@@ -670,15 +835,29 @@ if (-not $GitHubToken) {
     }
 }
 
+# --- Resolve GenAI Token ---
+$genaiToken = [System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)
+if (-not $genaiToken) {
+    if ($Silent) {
+        Write-Warning "GenAI token not found in `$env:$($config.genai.tokenEnvVar). AI summaries will be skipped."
+    }
+    else {
+        Write-Host "GenAI API token enables AI-powered summarization of results." -ForegroundColor Yellow
+        Write-Host "  (Get one from Ask Sage: Settings > Account > Manage API Keys)" -ForegroundColor Gray
+        $genaiInput = Read-Host "Paste your GenAI API token (or press Enter to skip)"
+        if ($genaiInput) {
+            [System.Environment]::SetEnvironmentVariable($config.genai.tokenEnvVar, $genaiInput, "Process")
+        }
+    }
+}
+
 # --- Resolve remaining parameters ---
 if ($Silent) {
-    # Silent mode: use flags or defaults
-    if (-not $DaysBack)    { $DaysBack = 30 }
-    if (-not $Sources)     { $Sources = @('Google', 'Paste', 'GitHub', 'Breach') }
+    if (-not $DaysBack)    { $DaysBack = $config.search.daysBack }
+    if (-not $Sources)     { $Sources = $config.search.sources }
     if (-not $KeywordFile) { $KeywordFile = Join-Path $PSScriptRoot "keywords.txt" }
 }
 else {
-    # Interactive mode: prompt for each setting
     if (-not $KeywordFile) {
         $defaultKw = Join-Path $PSScriptRoot "keywords.txt"
         $input = Read-Host "Keywords file path [$defaultKw]"
@@ -686,18 +865,18 @@ else {
     }
 
     if (-not $DaysBack) {
-        $input = Read-Host "Days back to search [30]"
-        $DaysBack = if ($input) { [int]$input } else { 30 }
+        $input = Read-Host "Days back to search [$($config.search.daysBack)]"
+        $DaysBack = if ($input) { [int]$input } else { $config.search.daysBack }
     }
 
     if (-not $Sources) {
-        Write-Host "Available sources: Google, Paste, GitHub, Breach" -ForegroundColor Gray
+        Write-Host "Available sources: DuckDuckGo, Paste, GitHub, Breach" -ForegroundColor Gray
         $input = Read-Host "Sources to scan (comma-separated) [All]"
         $Sources = if ($input) {
             $input -split ',' | ForEach-Object { $_.Trim() }
         }
         else {
-            @('Google', 'Paste', 'GitHub', 'Breach')
+            $config.search.sources
         }
     }
 
@@ -721,15 +900,16 @@ Write-Host "Scan Configuration:" -ForegroundColor White
 Write-Host "  Keywords:  $($keywords.Count) loaded" -ForegroundColor Gray
 Write-Host "  Days Back: $DaysBack" -ForegroundColor Gray
 Write-Host "  Sources:   $($Sources -join ', ')" -ForegroundColor Gray
+Write-Host "  GenAI:     $(if ([System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)) { 'Enabled' } else { 'Disabled (no token)' })" -ForegroundColor Gray
 Write-Host ""
 
 $allResults = @()
 
-# --- Google Dorks ---
-if ('Google' -in $Sources) {
-    Write-Host "=== Scanning Google Dorks... ===" -ForegroundColor White
-    $googleResults = Search-GoogleDorks -Keywords $keywords -DaysBack $DaysBack
-    $allResults += $googleResults
+# --- DuckDuckGo ---
+if ('DuckDuckGo' -in $Sources) {
+    Write-Host "=== Scanning DuckDuckGo... ===" -ForegroundColor White
+    $ddgResults = Search-DuckDuckGo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds
+    $allResults += $ddgResults
     Write-Host ""
 }
 
@@ -783,8 +963,25 @@ foreach ($group in $grouped | Sort-Object Name) {
 Write-Host "  Total: $($allResults.Count)" -ForegroundColor White
 Write-Host ""
 
+# --- GenAI Summarization (per keyword) ---
+$aiSummaries = @{}
+$genaiTokenCheck = [System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)
+if ($genaiTokenCheck) {
+    Write-Host "=== Running GenAI Analysis... ===" -ForegroundColor White
+    $resultsByKeyword = $allResults | Group-Object -Property Keyword
+
+    foreach ($kwGroup in $resultsByKeyword) {
+        $summary = Invoke-GenAISummary -Keyword $kwGroup.Name -Results $kwGroup.Group -GenAIConfig $config.genai
+        $aiSummaries[$kwGroup.Name] = $summary
+    }
+    Write-Host ""
+}
+else {
+    Write-Host "[GenAI] Skipped - no API token configured." -ForegroundColor DarkGray
+}
+
 # Export HTML
-$reportPath = Export-AU13Html -Results $allResults -OutputPath $OutputFile -Keywords $keywords -DaysBack $DaysBack -Sources $Sources
+$reportPath = Export-AU13Html -Results $allResults -OutputPath $OutputFile -Keywords $keywords -DaysBack $DaysBack -Sources $Sources -AISummaries $aiSummaries
 
 # Display high-severity hits in console
 $highSev = $allResults | Where-Object { $_.Severity -in @('Critical', 'High') }

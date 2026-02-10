@@ -13,10 +13,20 @@ Copy-Item config/keywords.example.txt keywords.txt
 # Edit keywords.txt - add your organization-specific search terms
 ```
 
-**2. Run the scanner:**
+**2. Set up tokens:**
 
 ```powershell
-# Interactive mode - prompts for all settings
+# Required: GitHub token for code/commit/issue searches
+$env:GITHUB_TOKEN = "ghp_xxxx"
+
+# Optional: Ask Sage GenAI token for AI-powered summaries
+[System.Environment]::SetEnvironmentVariable("GENAI_API_TOKEN", "your-key", "User")
+```
+
+**3. Run the scanner:**
+
+```powershell
+# Interactive mode - prompts for everything
 .\Look4Gold13.ps1
 
 # Silent mode - uses flags and defaults, no prompts
@@ -28,6 +38,8 @@ Copy-Item config/keywords.example.txt keywords.txt
 - PowerShell 7.0+
 - GitHub Personal Access Token (required)
   - Create one at https://github.com/settings/tokens with `public_repo` scope
+- Ask Sage GenAI API token (optional, for AI summaries)
+  - Get one from Ask Sage: Settings > Account > Manage API Keys
 
 ## Usage
 
@@ -41,6 +53,7 @@ Just run the script. It will prompt for everything:
 
 You'll be asked for:
 - GitHub token (checks `$env:GITHUB_TOKEN` first)
+- GenAI API token (optional, checks `$env:GENAI_API_TOKEN` first)
 - Keywords file path
 - Days back to search
 - Which sources to scan
@@ -59,10 +72,13 @@ $env:GITHUB_TOKEN = "ghp_xxxx"
 .\Look4Gold13.ps1 -Silent
 
 # Custom settings
-.\Look4Gold13.ps1 -Silent -GitHubToken "ghp_xxxx" -DaysBack 7 -Sources Google,GitHub
+.\Look4Gold13.ps1 -Silent -GitHubToken "ghp_xxxx" -DaysBack 7 -Sources DuckDuckGo,GitHub
 
 # Specify output path
 .\Look4Gold13.ps1 -Silent -GitHubToken "ghp_xxxx" -OutputFile "./my-report.html"
+
+# Custom config file
+.\Look4Gold13.ps1 -Silent -ConfigFile "./my-config.json"
 ```
 
 ### Parameters
@@ -73,28 +89,84 @@ $env:GITHUB_TOKEN = "ghp_xxxx"
 | `-GitHubToken` | `$env:GITHUB_TOKEN` | GitHub Personal Access Token (required) |
 | `-KeywordFile` | `./keywords.txt` | Path to keywords file |
 | `-DaysBack` | 30 | How many days back to search |
-| `-Sources` | All | Which sources: `Google`, `Paste`, `GitHub`, `Breach` |
+| `-Sources` | All | Which sources: `DuckDuckGo`, `Paste`, `GitHub`, `Breach` |
 | `-OutputFile` | Auto-generated | Path for HTML report |
-
-## Google Dorks — How It Works and Limitations
-
-The Google source searches google.com directly using dork queries (`site:`, `filetype:` operators) — no API key required.
-
-**Limitations:**
-- Google will rate-limit or CAPTCHA automated requests, especially with many keywords
-- When a dork check fails (rate-limited), the URL is still included in the HTML report as a "Manual-Review" item so you can open it in a browser yourself
-- A 2-second delay is added between requests to reduce rate-limiting
-
-> **Why no Google API?** The Google Custom Search API requires a Programmable Search Engine, which no longer supports "search the entire web" — you must pre-configure specific sites. Between the deprecated features, confusing setup, and 100 query/day free limit, direct dork URLs are more practical for this use case.
+| `-ConfigFile` | `config/au13-config.json` | Path to config file |
 
 ## Sources Scanned
 
 | Source | Method | Auth Required |
 |---|---|---|
-| **Google Dorks** | Direct google.com dork URL checks | No |
-| **Paste Sites** | psbdmp.ws API + Google-indexed paste sites | No |
+| **DuckDuckGo** | HTML lite endpoint with `site:` and `filetype:` dorks | No |
+| **Paste Sites** | psbdmp.ws API + DuckDuckGo-indexed paste sites | No |
 | **GitHub** | Code, commits, and issues via GitHub Search API | Yes (token) |
 | **Breach Info** | HIBP breach database + security blog searches | No |
+
+## GenAI Summarization
+
+When a GenAI API token is configured, the scanner sends results **per keyword** to Ask Sage for AI-powered analysis. Each keyword section in the HTML report will include:
+
+- Risk assessment
+- Key findings summary
+- Recommended actions
+
+The AI summary appears in a blue callout box below each keyword's results in the report.
+
+### Setup
+
+1. Get an API key from [Ask Sage](https://asksage.ai/) (Settings > Account > Manage API Keys)
+2. Set the environment variable:
+   ```powershell
+   [System.Environment]::SetEnvironmentVariable("GENAI_API_TOKEN", "your-key", "User")
+   # Restart PowerShell after setting User-level env vars
+   ```
+3. Or just paste it when prompted in interactive mode
+
+Without a token, the scanner runs normally but skips AI summaries.
+
+## Config File
+
+The config file (`config/au13-config.json`) controls GenAI and search settings. Copy the example to get started:
+
+```powershell
+Copy-Item config/au13-config.example.json config/au13-config.json
+```
+
+### Config Options
+
+```json
+{
+    "genai": {
+        "endpoint": "https://api.asksage.ai/server/query",
+        "tokenEnvVar": "GENAI_API_TOKEN",
+        "model": "google-claude-45-sonnet",
+        "persona": 5,
+        "temperature": 0.7,
+        "limit_references": 5,
+        "live": 1
+    },
+    "search": {
+        "daysBack": 30,
+        "delaySeconds": 2,
+        "sources": ["DuckDuckGo", "Paste", "GitHub", "Breach"]
+    }
+}
+```
+
+| Setting | Description |
+|---|---|
+| `genai.endpoint` | GenAI API URL (change if using a different provider) |
+| `genai.tokenEnvVar` | Name of the environment variable holding the API token |
+| `genai.model` | Model to use for summarization |
+| `genai.persona` | Ask Sage persona ID |
+| `genai.temperature` | Response creativity (0.0 = deterministic, 1.0 = creative) |
+| `genai.limit_references` | Max references returned by AI |
+| `genai.live` | Enable web search in AI responses (1 = on, 0 = off) |
+| `search.daysBack` | Default days back for searches |
+| `search.delaySeconds` | Delay between DuckDuckGo requests |
+| `search.sources` | Default sources to scan |
+
+All settings have built-in defaults. The config file is optional — only include the settings you want to override.
 
 ## Output
 
@@ -102,6 +174,7 @@ Results are saved as an **HTML report** with:
 - Per-keyword sections showing query, result count, and clickable links
 - Severity badges (Critical, High, Medium, Review, Manual-Review)
 - Snippet previews for each finding
+- AI analysis per keyword (when GenAI token is configured)
 
 Reports are saved to `./Output/AU13_Scan_<timestamp>.html` by default.
 
@@ -126,7 +199,8 @@ Look4Gold13/
 ├── keywords.txt                 # Your keywords (gitignored)
 ├── Output/                      # HTML reports (gitignored)
 ├── config/
-│   ├── keywords.example.txt     # Starter keywords with common phrases
-│   └── au13-config.example.json # Config template
+│   ├── au13-config.example.json # Config template (copy to au13-config.json)
+│   ├── au13-config.json         # Your config (gitignored)
+│   └── keywords.example.txt    # Starter keywords with common phrases
 └── src/                         # Original module files (reference)
 ```
