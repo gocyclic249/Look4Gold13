@@ -45,7 +45,6 @@ You'll be asked for:
 - Days back to search
 - Which sources to scan
 - Output file path
-- Google API key (optional)
 
 ### Silent Mode
 
@@ -76,70 +75,23 @@ $env:GITHUB_TOKEN = "ghp_xxxx"
 | `-DaysBack` | 30 | How many days back to search |
 | `-Sources` | All | Which sources: `Google`, `Paste`, `GitHub`, `Breach` |
 | `-OutputFile` | Auto-generated | Path for HTML report |
-| `-GoogleApiKey` | none | Google Custom Search API key (optional) |
-| `-GoogleSearchEngineId` | none | Google Custom Search Engine ID (optional) |
 
-## Setting Up Google Custom Search (Optional)
+## Google Dorks — How It Works and Limitations
 
-Google Custom Search is optional but gives automated results for dork queries. Without it, the tool falls back to checking dork URLs directly.
+The Google source searches google.com directly using dork queries (`site:`, `filetype:` operators) — no API key required.
 
-> **Note:** Google's "Search the entire web" option for Programmable Search Engines has been deprecated. You must add specific sites to your search engine. This works fine for AU-13 monitoring since you're searching leak/disclosure sites anyway.
+**Limitations:**
+- Google will rate-limit or CAPTCHA automated requests, especially with many keywords
+- When a dork check fails (rate-limited), the URL is still included in the HTML report as a "Manual-Review" item so you can open it in a browser yourself
+- A 2-second delay is added between requests to reduce rate-limiting
 
-### Step 1: Create a Google Cloud Project and API Key
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a project (or pick an existing one)
-3. **Enable the Custom Search API** — this is easy to miss and causes 403 errors:
-   - Go to **APIs & Services > Library**
-   - Search for **"Custom Search API"**
-   - Click it, then click **Enable**
-4. Go to **APIs & Services > Credentials**
-5. Click **Create Credentials > API Key**
-6. Copy the key — this is your `-GoogleApiKey`
-
-### Step 2: Create a Programmable Search Engine
-
-1. Go to [Programmable Search Engine](https://programmablesearchengine.google.com/)
-2. Click **Add**
-3. Under "Sites to search", add the sites relevant to AU-13 monitoring:
-   ```
-   pastebin.com
-   github.com
-   trello.com
-   paste.ee
-   dpaste.org
-   ghostbin.com
-   haveibeenpwned.com
-   krebsonsecurity.com
-   bleepingcomputer.com
-   securityweek.com
-   databreaches.net
-   cybernews.com
-   ```
-4. Give it a name (e.g. "AU13 Scanner") and click **Create**
-5. Copy the **Search Engine ID** — this is your `-GoogleSearchEngineId`
-
-### Troubleshooting 403 Forbidden Errors
-
-If you get `403 Forbidden` from the Google API, check these in order:
-
-1. **API not enabled** (most common) — Go to [Custom Search API page](https://console.cloud.google.com/apis/library/customsearch.googleapis.com) and make sure it says "Enabled", not "Enable"
-2. **API key restrictions** — Under Credentials > your API key, check if IP or HTTP referrer restrictions are blocking your machine
-3. **No billing account** — Some Google Cloud projects require a billing account linked even for free-tier APIs. Go to Billing and link an account (you won't be charged within the free tier)
-
-**Free tier limits:** 100 queries/day. With 9 query templates per keyword, that's roughly 11 keywords/day before hitting the limit.
-
-You can test your setup by pasting this URL in a browser (replace YOUR_KEY and YOUR_CX):
-```
-https://www.googleapis.com/customsearch/v1?key=YOUR_KEY&cx=YOUR_CX&q=test
-```
-If it returns JSON with results, you're good. If it returns an error, the message will tell you exactly what's wrong.
+> **Why no Google API?** The Google Custom Search API requires a Programmable Search Engine, which no longer supports "search the entire web" — you must pre-configure specific sites. Between the deprecated features, confusing setup, and 100 query/day free limit, direct dork URLs are more practical for this use case.
 
 ## Sources Scanned
 
 | Source | Method | Auth Required |
 |---|---|---|
-| **Google Dorks** | Google Custom Search API or direct URL checks | Optional (API key) |
+| **Google Dorks** | Direct google.com dork URL checks | No |
 | **Paste Sites** | psbdmp.ws API + Google-indexed paste sites | No |
 | **GitHub** | Code, commits, and issues via GitHub Search API | Yes (token) |
 | **Breach Info** | HIBP breach database + security blog searches | No |

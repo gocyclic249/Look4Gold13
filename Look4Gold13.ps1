@@ -17,7 +17,7 @@
     .\Look4Gold13.ps1 -Silent -GitHubToken "ghp_xxxx" -DaysBack 60
     # Silent mode - no prompts, uses flags
 .EXAMPLE
-    .\Look4Gold13.ps1 -Silent -DaysBack 7 -Sources Google,GitHub
+    .\Look4Gold13.ps1 -Silent -DaysBack 7 -Sources GitHub,Breach
     # Silent mode with specific sources (reads token from $env:GITHUB_TOKEN)
 #>
 param(
@@ -31,10 +31,6 @@ param(
 
     [ValidateSet('Google', 'Paste', 'GitHub', 'Breach')]
     [string[]]$Sources,
-
-    [string]$GoogleApiKey,
-
-    [string]$GoogleSearchEngineId,
 
     [string]$GitHubToken
 )
@@ -120,139 +116,75 @@ function Search-GoogleDorks {
         [Parameter(Mandatory)]
         [string[]]$Keywords,
 
-        [int]$DaysBack = 30,
-
-        [string]$ApiKey,
-
-        [string]$SearchEngineId
+        [int]$DaysBack = 30
     )
 
     $results = @()
-    $dateRestrict = Get-DateFilter -DaysBack $DaysBack -Format 'Google'
 
-    if ($ApiKey -and $SearchEngineId) {
-        # API mode: search engine is already restricted to your configured sites,
-        # so we just search keywords directly (no site: operators needed).
-        # Filetype queries still work within the restricted site list.
-        $apiTemplates = @(
-            '"{keyword}"',
-            '"{keyword}" filetype:pdf',
-            '"{keyword}" filetype:xlsx',
-            '"{keyword}" filetype:csv',
-            '"{keyword}" filetype:doc',
-            '"{keyword}" filetype:conf',
-            '"{keyword}" filetype:log',
-            '"{keyword}" filetype:sql',
-            '"{keyword}" filetype:env'
-        )
+    # Google dork templates using site: and filetype: operators.
+    # These search regular google.com directly (no API needed).
+    # Limitation: Google may rate-limit or CAPTCHA automated requests.
+    # Results marked [Error] can still be opened manually in a browser.
+    $dorkTemplates = @(
+        '"{keyword}" site:pastebin.com',
+        '"{keyword}" site:github.com',
+        '"{keyword}" site:trello.com',
+        '"{keyword}" site:paste.ee',
+        '"{keyword}" site:dpaste.org',
+        '"{keyword}" filetype:pdf',
+        '"{keyword}" filetype:xlsx',
+        '"{keyword}" filetype:csv',
+        '"{keyword}" filetype:doc',
+        '"{keyword}" filetype:conf',
+        '"{keyword}" filetype:log',
+        '"{keyword}" filetype:sql',
+        '"{keyword}" filetype:env'
+    )
 
-        Write-Host "[Google] Running API search (site-restricted engine)..." -ForegroundColor Cyan
-        $stopApi = $false
+    Write-Host "[Google] Searching dork URLs directly (no API)..." -ForegroundColor Cyan
+    Write-Host "[Google] Note: Google may rate-limit or CAPTCHA these requests." -ForegroundColor Yellow
+    Write-Host "[Google] Dork URLs are included in the report for manual browser review." -ForegroundColor Yellow
 
-        foreach ($keyword in $Keywords) {
-            if ($stopApi) { break }
-            foreach ($template in $apiTemplates) {
-                if ($stopApi) { break }
-                $query = $template -replace '\{keyword\}', $keyword
-                $encodedQuery = [System.Uri]::EscapeDataString($query)
-                $uri = "https://www.googleapis.com/customsearch/v1?key=$ApiKey&cx=$SearchEngineId&q=$encodedQuery&dateRestrict=$dateRestrict&num=10"
+    foreach ($keyword in $Keywords) {
+        Write-Host "[Google] Checking dorks for '$keyword'..." -ForegroundColor Gray
+        foreach ($template in $dorkTemplates) {
+            $query = $template -replace '\{keyword\}', $keyword
+            $encodedQuery = [System.Uri]::EscapeDataString($query)
+            $dorkUrl = "https://www.google.com/search?q=$encodedQuery&tbs=qdr:d$DaysBack"
 
-                try {
-                    $response = Invoke-RestMethod -Uri $uri -Method Get -ErrorAction Stop
-
-                    if ($response.items) {
-                        foreach ($item in $response.items) {
-                            $results += New-AU13Result `
-                                -Source 'Google' `
-                                -Keyword $keyword `
-                                -Title $item.title `
-                                -Url $item.link `
-                                -Snippet $item.snippet `
-                                -Severity 'Review'
-                        }
-                    }
-
-                    Start-Sleep -Milliseconds 500
+            try {
+                $webResponse = Invoke-WebRequest -Uri $dorkUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop -Headers @{
+                    'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                 }
-                catch {
-                    $errMsg = $_.Exception.Message
-                    if ($errMsg -match '403') {
-                        Write-Warning "[Google] 403 Forbidden. Check that:"
-                        Write-Warning "  1. Custom Search API is enabled: https://console.cloud.google.com/apis/library/customsearch.googleapis.com"
-                        Write-Warning "  2. Your API key has no IP/referrer restrictions blocking this machine"
-                        Write-Warning "  3. Billing account is linked to your Google Cloud project"
-                        $stopApi = $true
-                    }
-                    elseif ($errMsg -match '401') {
-                        Write-Warning "[Google] 401 Unauthorized. Your API key appears invalid."
-                        $stopApi = $true
-                    }
-                    elseif ($errMsg -match '429') {
-                        Write-Warning "[Google] 429 Rate limited. Free tier is 100 queries/day."
-                        $stopApi = $true
-                    }
-                    else {
-                        Write-Warning "[Google] API error for '$query': $errMsg"
-                    }
+                $html = $webResponse.Content
+
+                if ($html -match 'did not match any documents' -or $html -match 'No results found') {
+                    Write-Host "  [No Results] $query" -ForegroundColor DarkGray
+                }
+                else {
+                    Write-Host "  [Results Found] $query" -ForegroundColor Green
+                    $results += New-AU13Result `
+                        -Source 'Google-Dork' `
+                        -Keyword $keyword `
+                        -Title "Dork Hit: $query" `
+                        -Url $dorkUrl `
+                        -Snippet "Google returned results for this dork query - review in browser" `
+                        -Severity 'Review'
                 }
             }
-        }
-    }
-    else {
-        # Manual mode: generate Google dork URLs for the user to open in a browser.
-        # These go to regular google.com so site: and filetype: operators work.
-        $dorkTemplates = @(
-            '"{keyword}" site:pastebin.com',
-            '"{keyword}" site:github.com',
-            '"{keyword}" site:trello.com',
-            '"{keyword}" site:paste.ee',
-            '"{keyword}" site:dpaste.org',
-            '"{keyword}" filetype:pdf',
-            '"{keyword}" filetype:xlsx',
-            '"{keyword}" filetype:csv',
-            '"{keyword}" filetype:doc',
-            '"{keyword}" filetype:conf',
-            '"{keyword}" filetype:log',
-            '"{keyword}" filetype:sql',
-            '"{keyword}" filetype:env'
-        )
-
-        Write-Host "[Google] No API key configured. Checking dork URLs directly..." -ForegroundColor Yellow
-        Write-Host "[Google] Tip: Get a free API key at https://developers.google.com/custom-search/v1/introduction" -ForegroundColor Yellow
-
-        foreach ($keyword in $Keywords) {
-            Write-Host "[Google] Checking dorks for '$keyword'..." -ForegroundColor Gray
-            foreach ($template in $dorkTemplates) {
-                $query = $template -replace '\{keyword\}', $keyword
-                $encodedQuery = [System.Uri]::EscapeDataString($query)
-                $dorkUrl = "https://www.google.com/search?q=$encodedQuery&tbs=qdr:d$DaysBack"
-
-                try {
-                    $webResponse = Invoke-WebRequest -Uri $dorkUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop -Headers @{
-                        'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                    }
-                    $html = $webResponse.Content
-
-                    if ($html -match 'did not match any documents' -or $html -match 'No results found') {
-                        Write-Host "  [No Results] $query" -ForegroundColor DarkGray
-                    }
-                    else {
-                        Write-Host "  [Results Found] $query" -ForegroundColor Green
-                        $results += New-AU13Result `
-                            -Source 'Google-Dork' `
-                            -Keyword $keyword `
-                            -Title "Dork Hit: $query" `
-                            -Url $dorkUrl `
-                            -Snippet "Google returned results for this dork query - review in browser" `
-                            -Severity 'Review'
-                    }
-                }
-                catch {
-                    Write-Host "  [Error] $query - $($_.Exception.Message)" -ForegroundColor DarkYellow
-                }
-
-                Start-Sleep -Seconds 2
+            catch {
+                Write-Host "  [Error] $query - $($_.Exception.Message)" -ForegroundColor DarkYellow
+                # Still include the dork URL in results so the user can open it manually
+                $results += New-AU13Result `
+                    -Source 'Google-Dork' `
+                    -Keyword $keyword `
+                    -Title "MANUAL: $query" `
+                    -Url $dorkUrl `
+                    -Snippet "Automated check failed (likely rate-limited) - open this URL in a browser to review" `
+                    -Severity 'Manual-Review'
             }
+
+            Start-Sleep -Seconds 2
         }
     }
 
@@ -774,15 +706,6 @@ else {
         $input = Read-Host "Output file path [$defaultOut]"
         $OutputFile = if ($input) { $input } else { $defaultOut }
     }
-
-    if (-not $GoogleApiKey) {
-        $input = Read-Host "Google API Key (optional, press Enter to skip)"
-        if ($input) { $GoogleApiKey = $input }
-    }
-
-    if ($GoogleApiKey -and -not $GoogleSearchEngineId) {
-        $GoogleSearchEngineId = Read-Host "Google Search Engine ID (cx)"
-    }
 }
 
 # --- Load keywords ---
@@ -805,14 +728,7 @@ $allResults = @()
 # --- Google Dorks ---
 if ('Google' -in $Sources) {
     Write-Host "=== Scanning Google Dorks... ===" -ForegroundColor White
-    $googleParams = @{
-        Keywords = $keywords
-        DaysBack = $DaysBack
-    }
-    if ($GoogleApiKey)        { $googleParams['ApiKey'] = $GoogleApiKey }
-    if ($GoogleSearchEngineId) { $googleParams['SearchEngineId'] = $GoogleSearchEngineId }
-
-    $googleResults = Search-GoogleDorks @googleParams
+    $googleResults = Search-GoogleDorks -Keywords $keywords -DaysBack $DaysBack
     $allResults += $googleResults
     Write-Host ""
 }
