@@ -124,19 +124,18 @@ function Search-GoogleDorks {
 
         [string]$ApiKey,
 
-        [string]$SearchEngineId,
-
-        [string[]]$DorkTemplates
+        [string]$SearchEngineId
     )
 
     $results = @()
+    $dateRestrict = Get-DateFilter -DaysBack $DaysBack -Format 'Google'
 
-    if (-not $DorkTemplates) {
-        $DorkTemplates = @(
+    if ($ApiKey -and $SearchEngineId) {
+        # API mode: search engine is already restricted to your configured sites,
+        # so we just search keywords directly (no site: operators needed).
+        # Filetype queries still work within the restricted site list.
+        $apiTemplates = @(
             '"{keyword}"',
-            '"{keyword}" site:pastebin.com',
-            '"{keyword}" site:github.com',
-            '"{keyword}" site:trello.com',
             '"{keyword}" filetype:pdf',
             '"{keyword}" filetype:xlsx',
             '"{keyword}" filetype:csv',
@@ -146,15 +145,14 @@ function Search-GoogleDorks {
             '"{keyword}" filetype:sql',
             '"{keyword}" filetype:env'
         )
-    }
 
-    $dateRestrict = Get-DateFilter -DaysBack $DaysBack -Format 'Google'
-
-    if ($ApiKey -and $SearchEngineId) {
-        Write-Host "[Google] Running automated API search..." -ForegroundColor Cyan
+        Write-Host "[Google] Running API search (site-restricted engine)..." -ForegroundColor Cyan
+        $stopApi = $false
 
         foreach ($keyword in $Keywords) {
-            foreach ($template in $DorkTemplates) {
+            if ($stopApi) { break }
+            foreach ($template in $apiTemplates) {
+                if ($stopApi) { break }
                 $query = $template -replace '\{keyword\}', $keyword
                 $encodedQuery = [System.Uri]::EscapeDataString($query)
                 $uri = "https://www.googleapis.com/customsearch/v1?key=$ApiKey&cx=$SearchEngineId&q=$encodedQuery&dateRestrict=$dateRestrict&num=10"
@@ -177,18 +175,54 @@ function Search-GoogleDorks {
                     Start-Sleep -Milliseconds 500
                 }
                 catch {
-                    Write-Warning "[Google] API error for query '$query': $($_.Exception.Message)"
+                    $errMsg = $_.Exception.Message
+                    if ($errMsg -match '403') {
+                        Write-Warning "[Google] 403 Forbidden. Check that:"
+                        Write-Warning "  1. Custom Search API is enabled: https://console.cloud.google.com/apis/library/customsearch.googleapis.com"
+                        Write-Warning "  2. Your API key has no IP/referrer restrictions blocking this machine"
+                        Write-Warning "  3. Billing account is linked to your Google Cloud project"
+                        $stopApi = $true
+                    }
+                    elseif ($errMsg -match '401') {
+                        Write-Warning "[Google] 401 Unauthorized. Your API key appears invalid."
+                        $stopApi = $true
+                    }
+                    elseif ($errMsg -match '429') {
+                        Write-Warning "[Google] 429 Rate limited. Free tier is 100 queries/day."
+                        $stopApi = $true
+                    }
+                    else {
+                        Write-Warning "[Google] API error for '$query': $errMsg"
+                    }
                 }
             }
         }
     }
     else {
+        # Manual mode: generate Google dork URLs for the user to open in a browser.
+        # These go to regular google.com so site: and filetype: operators work.
+        $dorkTemplates = @(
+            '"{keyword}" site:pastebin.com',
+            '"{keyword}" site:github.com',
+            '"{keyword}" site:trello.com',
+            '"{keyword}" site:paste.ee',
+            '"{keyword}" site:dpaste.org',
+            '"{keyword}" filetype:pdf',
+            '"{keyword}" filetype:xlsx',
+            '"{keyword}" filetype:csv',
+            '"{keyword}" filetype:doc',
+            '"{keyword}" filetype:conf',
+            '"{keyword}" filetype:log',
+            '"{keyword}" filetype:sql',
+            '"{keyword}" filetype:env'
+        )
+
         Write-Host "[Google] No API key configured. Checking dork URLs directly..." -ForegroundColor Yellow
         Write-Host "[Google] Tip: Get a free API key at https://developers.google.com/custom-search/v1/introduction" -ForegroundColor Yellow
 
         foreach ($keyword in $Keywords) {
             Write-Host "[Google] Checking dorks for '$keyword'..." -ForegroundColor Gray
-            foreach ($template in $DorkTemplates) {
+            foreach ($template in $dorkTemplates) {
                 $query = $template -replace '\{keyword\}', $keyword
                 $encodedQuery = [System.Uri]::EscapeDataString($query)
                 $dorkUrl = "https://www.google.com/search?q=$encodedQuery&tbs=qdr:d$DaysBack"
