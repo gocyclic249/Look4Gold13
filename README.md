@@ -1,5 +1,9 @@
 # Look4Gold13 - AU-13 Compliance Scanner
 
+> **CLASSIFICATION: UNCLASSIFIED**
+>
+> This script and repository are unclassified. However, the **keywords you search for may be sensitive**. The `keywords.txt` file is gitignored to prevent accidental disclosure, but exercise care when choosing search terms — do not include classified or controlled information in your keywords. Once results are generated, the HTML report should be handled according to your organization's data handling policies.
+
 A PowerShell script for monitoring compliance with **NIST SP 800-53 AU-13 (Monitoring for Information Disclosure)**.
 
 AU-13 requires organizations to monitor open-source information and publicly accessible sites for evidence of unauthorized disclosure of organizational information.
@@ -100,6 +104,8 @@ $env:GITHUB_TOKEN = "ghp_xxxx"
 | **DuckDuckGo** | HTML lite endpoint with `site:` and `filetype:` dorks | No |
 | **Paste Sites** | psbdmp.ws API + DuckDuckGo-indexed paste sites | No |
 | **GitHub** | Code, commits, and issues via GitHub Search API | Yes (token) |
+
+> **GitHub Rate Limits:** Even with a personal access token, the GitHub Search API is limited to **30 requests/minute**. The scanner pauses 6 seconds between searches (3 searches per keyword: code, commits, issues). With many keywords, you may still hit rate limits — the script will warn and continue with remaining sources.
 | **Breach Info** | HIBP breach database + security blog searches | No |
 
 ## GenAI Summarization
@@ -137,7 +143,7 @@ Copy-Item config/au13-config.example.json config/au13-config.json
 ```json
 {
     "genai": {
-        "endpoint": "https://api.asksage.ai/server/query",
+        "endpoint": "https://api.genai.army.mil/server/query",
         "tokenEnvVar": "GENAI_API_TOKEN",
         "model": "google-claude-45-sonnet",
         "persona": 5,

@@ -123,7 +123,7 @@ function Import-AU13Config {
     # Default config values
     $defaults = @{
         genai = @{
-            endpoint         = 'https://api.asksage.ai/server/query'
+            endpoint         = 'https://api.genai.army.mil/server/query'
             tokenEnvVar      = 'GENAI_API_TOKEN'
             model            = 'google-claude-45-sonnet'
             persona          = 5
