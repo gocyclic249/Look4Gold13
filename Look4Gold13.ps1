@@ -22,6 +22,12 @@
 .EXAMPLE
     .\Look4Gold13.ps1 -Silent -DaysBack 7 -Sources DuckDuckGo,Breach
     # Silent mode with specific sources
+.EXAMPLE
+    .\Look4Gold13.ps1 -UseProxy
+    # Route DDG searches through Menlo Security (gov computers)
+.EXAMPLE
+    .\Look4Gold13.ps1 -Silent -UseProxy
+    # Silent mode through Menlo Security proxy
 #>
 param(
     [switch]$Silent,
@@ -35,7 +41,9 @@ param(
     [string]$ConfigFile,
 
     [ValidateSet('DuckDuckGo', 'Paste', 'Breach')]
-    [string[]]$Sources
+    [string[]]$Sources,
+
+    [switch]$UseProxy
 )
 
 # ============================================================================
@@ -107,6 +115,18 @@ function Invoke-RestMethodWithRetry {
             }
         }
     }
+}
+
+function Get-ProxiedUrl {
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [string]$ProxyBase
+    )
+
+    if ($ProxyBase) {
+        return "$ProxyBase/$Url"
+    }
+    return $Url
 }
 
 function New-AU13Result {
@@ -183,6 +203,7 @@ function Import-AU13Config {
             daysBack     = 30
             delaySeconds = 3
             sources      = @('DuckDuckGo', 'Paste', 'Breach')
+            webProxyBase = 'https://safe.menlosecurity.com'
         }
     }
 
@@ -228,7 +249,9 @@ function Search-DuckDuckGo {
 
         [int]$DaysBack = 30,
 
-        [int]$DelaySeconds = 2
+        [int]$DelaySeconds = 2,
+
+        [string]$ProxyBase = ''
     )
 
     $results = @()
@@ -250,7 +273,7 @@ function Search-DuckDuckGo {
         foreach ($group in $dorkGroups) {
             $query = "`"$keyword`" $($group.Query)"
             $encodedQuery = [System.Uri]::EscapeDataString($query)
-            $ddgUrl = "https://html.duckduckgo.com/html/?q=$encodedQuery"
+            $ddgUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/?q=$encodedQuery" -ProxyBase $ProxyBase
 
             try {
                 $reqParams = @{
@@ -328,7 +351,9 @@ function Search-PasteSites {
         [Parameter(Mandatory)]
         [string[]]$Keywords,
 
-        [int]$DaysBack = 30
+        [int]$DaysBack = 30,
+
+        [string]$ProxyBase = ''
     )
 
     $results = @()
@@ -383,15 +408,16 @@ function Search-PasteSites {
             }
         }
 
+        $ddgBase = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/" -ProxyBase $ProxyBase
         $pasteSites = @(
-            @{ Name = 'Pastebin';     Url = "https://html.duckduckgo.com/html/?q=site:pastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Paste.ee';     Url = "https://html.duckduckgo.com/html/?q=site:paste.ee+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Ghostbin';     Url = "https://html.duckduckgo.com/html/?q=site:ghostbin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Dpaste';       Url = "https://html.duckduckgo.com/html/?q=site:dpaste.org+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Rentry';       Url = "https://html.duckduckgo.com/html/?q=site:rentry.co+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'JustPaste.it'; Url = "https://html.duckduckgo.com/html/?q=site:justpaste.it+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'ControlC';     Url = "https://html.duckduckgo.com/html/?q=site:controlc.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'PrivateBin';   Url = "https://html.duckduckgo.com/html/?q=site:privatebin.net+%22$([System.Uri]::EscapeDataString($keyword))%22" }
+            @{ Name = 'Pastebin';     Url = "${ddgBase}?q=site:pastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Paste.ee';     Url = "${ddgBase}?q=site:paste.ee+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Ghostbin';     Url = "${ddgBase}?q=site:ghostbin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Dpaste';       Url = "${ddgBase}?q=site:dpaste.org+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Rentry';       Url = "${ddgBase}?q=site:rentry.co+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'JustPaste.it'; Url = "${ddgBase}?q=site:justpaste.it+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'ControlC';     Url = "${ddgBase}?q=site:controlc.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'PrivateBin';   Url = "${ddgBase}?q=site:privatebin.net+%22$([System.Uri]::EscapeDataString($keyword))%22" }
         )
 
         Write-Host "[PasteSites] Manual search URLs for '$keyword':" -ForegroundColor Gray
@@ -411,7 +437,9 @@ function Search-BreachInfo {
         [Parameter(Mandatory)]
         [string[]]$Keywords,
 
-        [int]$DaysBack = 30
+        [int]$DaysBack = 30,
+
+        [string]$ProxyBase = ''
     )
 
     $results = @()
@@ -443,7 +471,7 @@ function Search-BreachInfo {
 
         # --- DuckDuckGo searches across security blogs ---
         $combinedSites = ($breachSites | ForEach-Object { "site:$_" }) -join ' OR '
-        $combinedUrl = "https://html.duckduckgo.com/html/?q=$encodedKeyword+($([System.Uri]::EscapeDataString($combinedSites)))"
+        $combinedUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/?q=$encodedKeyword+($([System.Uri]::EscapeDataString($combinedSites)))" -ProxyBase $ProxyBase
 
         $results += New-AU13Result `
             -Source 'BreachBlogs-Combined' `
@@ -454,7 +482,7 @@ function Search-BreachInfo {
             -Severity 'Manual-Review'
 
         foreach ($site in @('haveibeenpwned.com', 'krebsonsecurity.com', 'bleepingcomputer.com')) {
-            $siteUrl = "https://html.duckduckgo.com/html/?q=site:$site+$encodedKeyword"
+            $siteUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/?q=site:$site+$encodedKeyword" -ProxyBase $ProxyBase
             $results += New-AU13Result `
                 -Source "BreachBlog-$site" `
                 -Keyword $keyword `
@@ -748,6 +776,26 @@ if (-not $genaiToken) {
     }
 }
 
+# --- Resolve web proxy (Menlo Security) ---
+$proxyBase = ''
+if ($UseProxy) {
+    $proxyBase = $config.search.webProxyBase
+}
+elseif (-not $Silent) {
+    Write-Host "Government networks may require Menlo Security web isolation proxy." -ForegroundColor Yellow
+    $input = Read-Host "Are you on a government computer that uses Menlo Security? (y/N)"
+    if ($input -match '^[Yy]') {
+        $proxyBase = $config.search.webProxyBase
+        Write-Host ""
+        Write-Host "  Before continuing, make sure you are logged into Menlo Security:" -ForegroundColor Cyan
+        Write-Host "    1. Open a browser and go to: $($config.search.webProxyBase)" -ForegroundColor Gray
+        Write-Host "    2. Log in if prompted (usually only required after a reboot)" -ForegroundColor Gray
+        Write-Host "    3. Once the page loads, you're good to go" -ForegroundColor Gray
+        Write-Host ""
+        Read-Host "Press Enter once you've confirmed Menlo Security is accessible"
+    }
+}
+
 # --- Resolve remaining parameters ---
 if ($Silent) {
     if (-not $DaysBack)    { $DaysBack = $config.search.daysBack }
@@ -797,6 +845,7 @@ Write-Host "Scan Configuration:" -ForegroundColor White
 Write-Host "  Keywords:  $($keywords.Count) loaded" -ForegroundColor Gray
 Write-Host "  Days Back: $DaysBack" -ForegroundColor Gray
 Write-Host "  Sources:   $($Sources -join ', ')" -ForegroundColor Gray
+Write-Host "  Proxy:     $(if ($proxyBase) { $proxyBase } else { 'Direct (no proxy)' })" -ForegroundColor Gray
 Write-Host "  GenAI:     $(if ([System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)) { 'Enabled' } else { 'Disabled (no token)' })" -ForegroundColor Gray
 Write-Host ""
 
@@ -805,7 +854,7 @@ $allResults = @()
 # --- DuckDuckGo ---
 if ('DuckDuckGo' -in $Sources) {
     Write-Host "=== Scanning DuckDuckGo... ===" -ForegroundColor White
-    $ddgResults = Search-DuckDuckGo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds
+    $ddgResults = Search-DuckDuckGo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase
     $allResults += $ddgResults
     Write-Host ""
 }
@@ -813,7 +862,7 @@ if ('DuckDuckGo' -in $Sources) {
 # --- Paste Sites ---
 if ('Paste' -in $Sources) {
     Write-Host "=== Scanning Paste Sites... ===" -ForegroundColor White
-    $pasteResults = Search-PasteSites -Keywords $keywords -DaysBack $DaysBack
+    $pasteResults = Search-PasteSites -Keywords $keywords -DaysBack $DaysBack -ProxyBase $proxyBase
     $allResults += $pasteResults
     Write-Host ""
 }
@@ -821,7 +870,7 @@ if ('Paste' -in $Sources) {
 # --- Breach Info ---
 if ('Breach' -in $Sources) {
     Write-Host "=== Scanning Breach Sources... ===" -ForegroundColor White
-    $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack
+    $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack -ProxyBase $proxyBase
     $allResults += $breachResults
     Write-Host ""
 }
