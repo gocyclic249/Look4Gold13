@@ -257,15 +257,17 @@ function Search-DuckDuckGo {
     $results = @()
 
     # Grouped dork queries — combines related site:/filetype: with OR to reduce
-    # request count from 17 per keyword to 4, avoiding DDG CAPTCHA rate limits.
+    # request count while keeping queries short enough for DDG's HTML lite endpoint.
+    # DDG rejects queries that are too long once URL-encoded (especially through proxies).
     $dorkGroups = @(
-        @{ Label = 'Paste sites';     Query = '(site:pastebin.com OR site:paste.ee OR site:dpaste.org OR site:rentry.co OR site:justpaste.it OR site:controlc.com OR site:privatebin.net)' },
-        @{ Label = 'Code/project';    Query = '(site:github.com OR site:trello.com)' },
-        @{ Label = 'Documents';       Query = '(filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:doc)' },
-        @{ Label = 'Config/sensitive'; Query = '(filetype:conf OR filetype:log OR filetype:sql OR filetype:env)' }
+        @{ Label = 'Paste sites (1/2)'; Query = 'site:pastebin.com OR site:paste.ee OR site:dpaste.org' },
+        @{ Label = 'Paste sites (2/2)'; Query = 'site:rentry.co OR site:justpaste.it OR site:controlc.com OR site:privatebin.net' },
+        @{ Label = 'Code/project';      Query = 'site:github.com OR site:trello.com' },
+        @{ Label = 'Documents';         Query = 'filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:doc' },
+        @{ Label = 'Config/sensitive';  Query = 'filetype:conf OR filetype:log OR filetype:sql OR filetype:env' }
     )
 
-    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($dorkGroups.Count) queries per keyword)..." -ForegroundColor Cyan
+    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($dorkGroups.Count) queries/keyword)..." -ForegroundColor Cyan
 
     foreach ($keyword in $Keywords) {
         Write-Host "[DuckDuckGo] Searching for '$keyword'..." -ForegroundColor Gray
@@ -301,8 +303,12 @@ function Search-DuckDuckGo {
                     }
                 }
 
+                # Detect DDG "query too long" error
+                if ($html -match 'too long') {
+                    Write-Host "  [Query Too Long] $($group.Label) - DDG rejected query length" -ForegroundColor DarkYellow
+                }
                 # DDG lite returns result links in <a class="result__a"> tags
-                if ($html -match 'No results' -or $html -match 'No more results' -or $html -notmatch 'result__a') {
+                elseif ($html -match 'No results' -or $html -match 'No more results' -or $html -notmatch 'result__a') {
                     Write-Host "  [No Results] $($group.Label)" -ForegroundColor DarkGray
                 }
                 else {
@@ -368,10 +374,10 @@ function Search-PasteSites {
             $reqParams = @{
                 Uri         = $uri
                 Method      = 'Get'
-                TimeoutSec  = 30
+                TimeoutSec  = 15
                 ErrorAction = 'Stop'
             }
-            $response = Invoke-RestMethodWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds 2
+            $response = Invoke-RestMethodWithRetry -RequestParams $reqParams -MaxRetries 1 -BaseDelaySeconds 3
 
             if ($response -and $response.Count -gt 0) {
                 foreach ($paste in $response) {
