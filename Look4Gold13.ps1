@@ -332,13 +332,18 @@ function Search-DuckDuckGo {
                 if ($html -match 'too long') {
                     Write-Host "  [Query Too Long] $($dork.Label) - DDG rejected query length" -ForegroundColor DarkYellow
                 }
-                # DDG lite returns result links in <a class="result__a"> tags
-                elseif ($html -match 'No results' -or $html -match 'No more results' -or $html -notmatch 'result__a') {
-                    Write-Host "  [No Results] $($dork.Label)" -ForegroundColor DarkGray
-                }
                 else {
-                    # Extract result links from DDG HTML
+                    # Try multiple regex patterns to extract results — Menlo proxy
+                    # may rewrite CSS class names, so fall back to URL patterns.
                     $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
+                    if ($linkMatches.Count -eq 0) {
+                        # Fallback: match DDG redirect links by uddg= parameter
+                        $linkMatches = [regex]::Matches($html, 'href="([^"]*uddg=[^"]+)"[^>]*>([^<]+)<')
+                    }
+                    if ($linkMatches.Count -eq 0) {
+                        # Fallback: match any duckduckgo.com/l/ redirect links
+                        $linkMatches = [regex]::Matches($html, 'href="([^"]*duckduckgo\.com/l/[^"]+)"[^>]*>([^<]+)<')
+                    }
 
                     if ($linkMatches.Count -gt 0) {
                         $newCount = 0
@@ -346,7 +351,7 @@ function Search-DuckDuckGo {
                             $resultUrl = $match.Groups[1].Value
                             $resultTitle = $match.Groups[2].Value.Trim()
 
-                            # DDG sometimes wraps URLs in a redirect — extract the real URL
+                            # DDG wraps URLs in a redirect — extract the real URL
                             if ($resultUrl -match 'uddg=([^&]+)') {
                                 $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
                             }
@@ -368,7 +373,7 @@ function Search-DuckDuckGo {
                         Write-Host "  [Results: $newCount new] $($dork.Label)" -ForegroundColor Green
                     }
                     else {
-                        Write-Host "  [Parse Error] $($dork.Label) - could not extract links" -ForegroundColor DarkYellow
+                        Write-Host "  [No Results] $($dork.Label)" -ForegroundColor DarkGray
                     }
                 }
             }
@@ -500,11 +505,15 @@ function Search-BreachInfo {
                 if ($html -match 'too long') {
                     Write-Host "  [Query Too Long] $($dork.Label)" -ForegroundColor DarkYellow
                 }
-                elseif ($html -match 'No results' -or $html -match 'No more results' -or $html -notmatch 'result__a') {
-                    Write-Host "  [No Results] $($dork.Label)" -ForegroundColor DarkGray
-                }
                 else {
+                    # Try multiple regex patterns — Menlo proxy may rewrite CSS classes
                     $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
+                    if ($linkMatches.Count -eq 0) {
+                        $linkMatches = [regex]::Matches($html, 'href="([^"]*uddg=[^"]+)"[^>]*>([^<]+)<')
+                    }
+                    if ($linkMatches.Count -eq 0) {
+                        $linkMatches = [regex]::Matches($html, 'href="([^"]*duckduckgo\.com/l/[^"]+)"[^>]*>([^<]+)<')
+                    }
 
                     if ($linkMatches.Count -gt 0) {
                         $newCount = 0
@@ -531,6 +540,9 @@ function Search-BreachInfo {
                                 -Severity 'High'
                         }
                         Write-Host "  [Results: $newCount new] $($dork.Label)" -ForegroundColor Green
+                    }
+                    else {
+                        Write-Host "  [No Results] $($dork.Label)" -ForegroundColor DarkGray
                     }
                 }
             }
