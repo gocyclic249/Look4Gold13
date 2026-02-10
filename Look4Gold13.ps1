@@ -5,7 +5,7 @@
     Scans multiple sources for unauthorized disclosure of organizational
     information per NIST SP 800-53 AU-13.
 
-    Sources: DuckDuckGo, Paste Sites, GitHub, Breach/Security Blogs
+    Sources: DuckDuckGo, Paste Sites, Breach/Security Blogs
 
     After scanning, sends results per keyword to a GenAI API (Ask Sage)
     for summarization. The AI summary is embedded in the HTML report.
@@ -17,11 +17,11 @@
     .\Look4Gold13.ps1
     # Interactive mode - prompts for everything
 .EXAMPLE
-    .\Look4Gold13.ps1 -Silent -GitHubToken "ghp_xxxx" -DaysBack 60
+    .\Look4Gold13.ps1 -Silent -DaysBack 60
     # Silent mode - no prompts, uses flags
 .EXAMPLE
-    .\Look4Gold13.ps1 -Silent -DaysBack 7 -Sources GitHub,Breach
-    # Silent mode with specific sources (reads tokens from env vars)
+    .\Look4Gold13.ps1 -Silent -DaysBack 7 -Sources DuckDuckGo,Breach
+    # Silent mode with specific sources
 #>
 param(
     [switch]$Silent,
@@ -34,32 +34,13 @@ param(
 
     [string]$ConfigFile,
 
-    [ValidateSet('DuckDuckGo', 'Paste', 'GitHub', 'Breach')]
-    [string[]]$Sources,
-
-    [string]$GitHubToken
+    [ValidateSet('DuckDuckGo', 'Paste', 'Breach')]
+    [string[]]$Sources
 )
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
-
-function Get-DateFilter {
-    param(
-        [Parameter(Mandatory)]
-        [int]$DaysBack,
-
-        [ValidateSet('GitHub', 'Unix')]
-        [string]$Format = 'GitHub'
-    )
-
-    $targetDate = (Get-Date).AddDays(-$DaysBack)
-
-    switch ($Format) {
-        'GitHub' { return $targetDate.ToString('yyyy-MM-dd') }
-        'Unix'   { return [int][double]::Parse((Get-Date $targetDate -UFormat %s)) }
-    }
-}
 
 function New-AU13Result {
     param(
@@ -134,7 +115,7 @@ function Import-AU13Config {
         search = @{
             daysBack     = 30
             delaySeconds = 2
-            sources      = @('DuckDuckGo', 'Paste', 'GitHub', 'Breach')
+            sources      = @('DuckDuckGo', 'Paste', 'Breach')
         }
     }
 
@@ -332,162 +313,6 @@ function Search-PasteSites {
     }
 
     Write-Host "[PasteSites] Found $($results.Count) results/links" -ForegroundColor Cyan
-    return $results
-}
-
-function Invoke-GitHubSearch {
-    param(
-        [Parameter(Mandatory)][string]$Uri,
-        [Parameter(Mandatory)][hashtable]$Headers,
-        [string]$SearchType = 'search',
-        [int]$MaxRetries = 2
-    )
-
-    for ($attempt = 0; $attempt -le $MaxRetries; $attempt++) {
-        try {
-            $response = Invoke-WebRequest -Uri $Uri -Headers $Headers -Method Get -TimeoutSec 30 -ErrorAction Stop
-
-            # Check rate limit remaining from response headers
-            $remaining = $response.Headers['X-RateLimit-Remaining']
-            $resetEpoch = $response.Headers['X-RateLimit-Reset']
-            if ($remaining -and [int]$remaining -le 2) {
-                $resetTime = [DateTimeOffset]::FromUnixTimeSeconds([long]$resetEpoch).LocalDateTime
-                $waitSec = [math]::Max(1, ($resetTime - (Get-Date)).TotalSeconds)
-                Write-Host "[GitHub] Rate limit low ($remaining left). Waiting $([math]::Ceiling($waitSec))s for reset..." -ForegroundColor Yellow
-                Start-Sleep -Seconds ([math]::Ceiling($waitSec))
-            }
-
-            return ($response.Content | ConvertFrom-Json)
-        }
-        catch {
-            $statusCode = $null
-            if ($_.Exception.Response) {
-                $statusCode = [int]$_.Exception.Response.StatusCode
-            }
-
-            if ($statusCode -eq 401) {
-                Write-Warning "[GitHub] Authentication failed. Check your GitHub token."
-                return $null
-            }
-            elseif ($statusCode -eq 403 -or ($_.Exception.Message -match '403')) {
-                if ($attempt -lt $MaxRetries) {
-                    # Check Retry-After header, default to 60s
-                    $retryAfter = 60
-                    if ($_.Exception.Response.Headers) {
-                        try {
-                            $ra = $_.Exception.Response.Headers | Where-Object { $_.Key -eq 'Retry-After' }
-                            if ($ra) { $retryAfter = [int]$ra.Value[0] }
-                        } catch {}
-                    }
-                    Write-Host "[GitHub] Rate limited on $SearchType (attempt $($attempt + 1)/$($MaxRetries + 1)). Waiting ${retryAfter}s..." -ForegroundColor Yellow
-                    Start-Sleep -Seconds $retryAfter
-                }
-                else {
-                    Write-Warning "[GitHub] Rate limited on $SearchType after $($MaxRetries + 1) attempts. Skipping."
-                    return $null
-                }
-            }
-            else {
-                Write-Warning "[GitHub] $SearchType error: $($_.Exception.Message)"
-                return $null
-            }
-        }
-    }
-    return $null
-}
-
-function Search-GitHubExposure {
-    param(
-        [Parameter(Mandatory)]
-        [string[]]$Keywords,
-
-        [int]$DaysBack = 30,
-
-        [Parameter(Mandatory)]
-        [string]$GitHubToken
-    )
-
-    $results = @()
-    $dateFilter = Get-DateFilter -DaysBack $DaysBack -Format 'GitHub'
-
-    $headers = @{
-        'Accept'        = 'application/vnd.github.v3+json'
-        'User-Agent'    = 'Look4Gold13-AU13-Scanner'
-        'Authorization' = "token $GitHubToken"
-    }
-
-    foreach ($keyword in $Keywords) {
-        $encodedKeyword = [System.Uri]::EscapeDataString("`"$keyword`"")
-
-        # --- Code search (most restrictive rate limit - ~10 req/min) ---
-        $codeUri = "https://api.github.com/search/code?q=$encodedKeyword&sort=indexed&order=desc&per_page=10"
-        Write-Verbose "[GitHub] Code search for '$keyword'..."
-
-        $codeResponse = Invoke-GitHubSearch -Uri $codeUri -Headers $headers -SearchType "code search for '$keyword'"
-
-        if ($codeResponse -and $codeResponse.items) {
-            foreach ($item in $codeResponse.items) {
-                $results += New-AU13Result `
-                    -Source 'GitHub-Code' `
-                    -Keyword $keyword `
-                    -Title "$($item.repository.full_name) - $($item.name)" `
-                    -Url $item.html_url `
-                    -Snippet "File: $($item.path) in repo $($item.repository.full_name)" `
-                    -Severity 'High'
-            }
-            Write-Verbose "[GitHub] Code search returned $($codeResponse.total_count) total results"
-        }
-
-        Start-Sleep -Seconds 12
-
-        # --- Commits search ---
-        $commitUri = "https://api.github.com/search/commits?q=$encodedKeyword+committer-date:>$dateFilter&sort=committer-date&order=desc&per_page=20"
-        Write-Verbose "[GitHub] Commit search for '$keyword'..."
-
-        $commitHeaders = $headers.Clone()
-        $commitHeaders['Accept'] = 'application/vnd.github.cloak-preview+json'
-
-        $commitResponse = Invoke-GitHubSearch -Uri $commitUri -Headers $commitHeaders -SearchType "commit search for '$keyword'"
-
-        if ($commitResponse -and $commitResponse.items) {
-            foreach ($item in $commitResponse.items) {
-                $commitDate = if ($item.commit.committer.date) { $item.commit.committer.date } else { '' }
-                $results += New-AU13Result `
-                    -Source 'GitHub-Commit' `
-                    -Keyword $keyword `
-                    -Title "$($item.repository.full_name) - $($item.commit.message | Select-Object -First 1)" `
-                    -Url $item.html_url `
-                    -Snippet "Commit by $($item.commit.committer.name) on $commitDate" `
-                    -DateFound $commitDate `
-                    -Severity 'High'
-            }
-        }
-
-        Start-Sleep -Seconds 12
-
-        # --- Issues search ---
-        $issueUri = "https://api.github.com/search/issues?q=$encodedKeyword+created:>$dateFilter&sort=created&order=desc&per_page=20"
-        Write-Verbose "[GitHub] Issue search for '$keyword'..."
-
-        $issueResponse = Invoke-GitHubSearch -Uri $issueUri -Headers $headers -SearchType "issue search for '$keyword'"
-
-        if ($issueResponse -and $issueResponse.items) {
-            foreach ($item in $issueResponse.items) {
-                $results += New-AU13Result `
-                    -Source 'GitHub-Issue' `
-                    -Keyword $keyword `
-                    -Title "$($item.title)" `
-                    -Url $item.html_url `
-                    -Snippet ($item.body | Select-Object -First 1) `
-                    -DateFound $item.created_at `
-                    -Severity 'Medium'
-            }
-        }
-
-        Start-Sleep -Seconds 12
-    }
-
-    Write-Host "[GitHub] Found $($results.Count) results" -ForegroundColor Cyan
     return $results
 }
 
@@ -809,27 +634,6 @@ Write-Host $banner -ForegroundColor Yellow
 # --- Load config file ---
 $config = Import-AU13Config -Path $ConfigFile
 
-# --- Resolve GitHub Token (REQUIRED) ---
-if (-not $GitHubToken) {
-    $GitHubToken = $env:GITHUB_TOKEN
-}
-
-if (-not $GitHubToken) {
-    if ($Silent) {
-        Write-Error "GitHub token is required. Provide -GitHubToken or set `$env:GITHUB_TOKEN."
-        exit 1
-    }
-    else {
-        Write-Host "A GitHub Personal Access Token is required for GitHub searches." -ForegroundColor Yellow
-        Write-Host "  (Create one at https://github.com/settings/tokens with 'public_repo' scope)" -ForegroundColor Gray
-        $GitHubToken = Read-Host "Paste your GitHub token"
-        if (-not $GitHubToken) {
-            Write-Error "No token provided. Cannot continue."
-            exit 1
-        }
-    }
-}
-
 # --- Resolve GenAI Token ---
 $genaiToken = [System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)
 if (-not $genaiToken) {
@@ -865,7 +669,7 @@ else {
     }
 
     if (-not $Sources) {
-        Write-Host "Available sources: DuckDuckGo, Paste, GitHub, Breach" -ForegroundColor Gray
+        Write-Host "Available sources: DuckDuckGo, Paste, Breach" -ForegroundColor Gray
         $input = Read-Host "Sources to scan (comma-separated) [All]"
         $Sources = if ($input) {
             $input -split ',' | ForEach-Object { $_.Trim() }
@@ -913,14 +717,6 @@ if ('Paste' -in $Sources) {
     Write-Host "=== Scanning Paste Sites... ===" -ForegroundColor White
     $pasteResults = Search-PasteSites -Keywords $keywords -DaysBack $DaysBack
     $allResults += $pasteResults
-    Write-Host ""
-}
-
-# --- GitHub ---
-if ('GitHub' -in $Sources) {
-    Write-Host "=== Scanning GitHub... ===" -ForegroundColor White
-    $githubResults = Search-GitHubExposure -Keywords $keywords -DaysBack $DaysBack -GitHubToken $GitHubToken
-    $allResults += $githubResults
     Write-Host ""
 }
 

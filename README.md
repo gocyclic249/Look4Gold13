@@ -17,13 +17,9 @@ Copy-Item config/keywords.example.txt keywords.txt
 # Edit keywords.txt - add your organization-specific search terms
 ```
 
-**2. Set up tokens:**
+**2. (Optional) Set up GenAI token for AI-powered summaries:**
 
 ```powershell
-# Required: GitHub token for code/commit/issue searches
-$env:GITHUB_TOKEN = "ghp_xxxx"
-
-# Optional: Ask Sage GenAI token for AI-powered summaries
 [System.Environment]::SetEnvironmentVariable("GENAI_API_TOKEN", "your-key", "User")
 ```
 
@@ -33,15 +29,13 @@ $env:GITHUB_TOKEN = "ghp_xxxx"
 # Interactive mode - prompts for everything
 .\Look4Gold13.ps1
 
-# Silent mode - uses flags and defaults, no prompts
-.\Look4Gold13.ps1 -Silent -GitHubToken "ghp_xxxx"
+# Silent mode - uses defaults, no prompts
+.\Look4Gold13.ps1 -Silent
 ```
 
 ## Requirements
 
 - PowerShell 7.0+
-- GitHub Personal Access Token (required)
-  - Create one at https://github.com/settings/tokens with `public_repo` scope
 - Ask Sage GenAI API token (optional, for AI summaries)
   - Get one from Ask Sage: Settings > Account > Manage API Keys
 
@@ -56,7 +50,6 @@ Just run the script. It will prompt for everything:
 ```
 
 You'll be asked for:
-- GitHub token (checks `$env:GITHUB_TOKEN` first)
 - GenAI API token (optional, checks `$env:GENAI_API_TOKEN` first)
 - Keywords file path
 - Days back to search
@@ -69,17 +62,13 @@ Use the `-Silent` flag with parameters for automated/scheduled runs:
 
 ```powershell
 # All defaults (30 days, all sources)
-.\Look4Gold13.ps1 -Silent -GitHubToken "ghp_xxxx"
-
-# Token from environment variable
-$env:GITHUB_TOKEN = "ghp_xxxx"
 .\Look4Gold13.ps1 -Silent
 
 # Custom settings
-.\Look4Gold13.ps1 -Silent -GitHubToken "ghp_xxxx" -DaysBack 7 -Sources DuckDuckGo,GitHub
+.\Look4Gold13.ps1 -Silent -DaysBack 7 -Sources DuckDuckGo,Breach
 
 # Specify output path
-.\Look4Gold13.ps1 -Silent -GitHubToken "ghp_xxxx" -OutputFile "./my-report.html"
+.\Look4Gold13.ps1 -Silent -OutputFile "./my-report.html"
 
 # Custom config file
 .\Look4Gold13.ps1 -Silent -ConfigFile "./my-config.json"
@@ -90,10 +79,9 @@ $env:GITHUB_TOKEN = "ghp_xxxx"
 | Parameter | Default | Description |
 |---|---|---|
 | `-Silent` | off | Skip prompts, use flags/defaults |
-| `-GitHubToken` | `$env:GITHUB_TOKEN` | GitHub Personal Access Token (required) |
 | `-KeywordFile` | `./keywords.txt` | Path to keywords file |
 | `-DaysBack` | 30 | How many days back to search |
-| `-Sources` | All | Which sources: `DuckDuckGo`, `Paste`, `GitHub`, `Breach` |
+| `-Sources` | All | Which sources: `DuckDuckGo`, `Paste`, `Breach` |
 | `-OutputFile` | Auto-generated | Path for HTML report |
 | `-ConfigFile` | `config/au13-config.json` | Path to config file |
 
@@ -101,12 +89,11 @@ $env:GITHUB_TOKEN = "ghp_xxxx"
 
 | Source | Method | Auth Required |
 |---|---|---|
-| **DuckDuckGo** | HTML lite endpoint with `site:` and `filetype:` dorks | No |
+| **DuckDuckGo** | HTML lite endpoint with `site:` and `filetype:` dorks (includes `site:github.com`) | No |
 | **Paste Sites** | psbdmp.ws API + DuckDuckGo-indexed paste sites | No |
-| **GitHub** | Code, commits, and issues via GitHub Search API | Yes (token) |
 | **Breach Info** | DuckDuckGo searches across security/breach blogs | No |
 
-> **GitHub Rate Limits:** The GitHub Search API has strict rate limits, especially for code search (~10 requests/minute). The scanner pauses 12 seconds between searches and automatically retries with backoff when rate limited. With many keywords, you may still hit limits — the script will wait and retry up to 2 times before skipping.
+> **Note:** GitHub is searched via DuckDuckGo `site:github.com` dorks, which avoids the strict rate limits of the GitHub Search API. No GitHub token is required.
 
 ## GenAI Summarization
 
@@ -154,7 +141,7 @@ Copy-Item config/au13-config.example.json config/au13-config.json
     "search": {
         "daysBack": 30,
         "delaySeconds": 2,
-        "sources": ["DuckDuckGo", "Paste", "GitHub", "Breach"]
+        "sources": ["DuckDuckGo", "Paste", "Breach"]
     }
 }
 ```

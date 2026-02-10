@@ -11,6 +11,6 @@
     "search": {
         "daysBack": 30,
         "delaySeconds": 2,
-        "sources": ["DuckDuckGo", "Paste", "GitHub", "Breach"]
+        "sources": ["DuckDuckGo", "Paste", "Breach"]
     }
 }
