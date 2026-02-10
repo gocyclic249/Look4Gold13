@@ -11,6 +11,7 @@
     "search": {
         "daysBack": 30,
         "delaySeconds": 3,
-        "sources": ["DuckDuckGo", "Paste", "Breach"]
+        "sources": ["DuckDuckGo", "Paste", "Breach"],
+        "webProxyBase": "https://safe.menlosecurity.com"
     }
 }

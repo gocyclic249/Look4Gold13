@@ -84,20 +84,50 @@ Use the `-Silent` flag with parameters for automated/scheduled runs:
 | `-Sources` | All | Which sources: `DuckDuckGo`, `Paste`, `Breach` |
 | `-OutputFile` | Auto-generated | Path for HTML report |
 | `-ConfigFile` | `config/au13-config.json` | Path to config file |
+| `-UseProxy` | off | Route searches through Menlo Security proxy (gov computers) |
+
+## Government Network / Menlo Security Proxy
+
+Government computers typically route web traffic through [Menlo Security](https://safe.menlosecurity.com) web isolation. The script supports this with the `-UseProxy` flag, which prefixes all DuckDuckGo URLs with the Menlo Security proxy base.
+
+### Before Running with Proxy
+
+1. Open a browser and go to [https://safe.menlosecurity.com](https://safe.menlosecurity.com)
+2. Log in if prompted (usually only required after a reboot)
+3. Once the page loads successfully, you're authenticated
+
+### Usage
+
+```powershell
+# Interactive mode — will ask if you're on a government computer
+.\Look4Gold13.ps1
+
+# Skip the prompt and enable proxy directly
+.\Look4Gold13.ps1 -UseProxy
+
+# Silent mode with proxy
+.\Look4Gold13.ps1 -Silent -UseProxy
+```
+
+In **interactive mode** (without `-UseProxy`), the script will ask if you're on a government computer and remind you to log into Menlo Security before continuing.
+
+The proxy base URL defaults to `https://safe.menlosecurity.com` and can be changed via the `search.webProxyBase` config setting if your organization uses a different proxy.
 
 ## Sources Scanned
 
 | Source | Method | Auth Required |
 |---|---|---|
-| **DuckDuckGo** | HTML lite endpoint with grouped `site:` and `filetype:` OR queries (4 queries per keyword) with CAPTCHA detection and retry | No |
-| **Paste Sites** | psbdmp.ws API + DuckDuckGo-indexed paste sites (Pastebin, Paste.ee, Ghostbin, Dpaste, Rentry, JustPaste.it, ControlC, PrivateBin) | No |
-| **Breach Info** | DuckDuckGo searches across 19 security/breach blogs and forums | No |
+| **DuckDuckGo** | HTML lite endpoint with grouped `site:` and `filetype:` OR queries (5 queries/keyword) with CAPTCHA detection and retry | No |
+| **Paste Sites** | Manual DuckDuckGo search links for 8 paste sites (Pastebin, Paste.ee, Ghostbin, Dpaste, Rentry, JustPaste.it, ControlC, PrivateBin) | No |
+| **Breach Info** | DuckDuckGo searches across 15 security/breach sites in 5 groups — only results with actual hits are included | No |
 
 ### Security Blogs & Breach Sites Monitored
 
-haveibeenpwned.com, krebsonsecurity.com, bleepingcomputer.com, securityweek.com, therecord.media, databreaches.net, breachdirectory.org, cybernews.com, hackread.com, securityaffairs.com, darkreading.com, thehackernews.com, schneier.com, grahamcluley.com, csoonline.com, infosecurity-magazine.com, arstechnica.com, reddit.com/r/netsec, reddit.com/r/cybersecurity
+haveibeenpwned.com, krebsonsecurity.com, bleepingcomputer.com, securityweek.com, therecord.media, databreaches.net, breachdirectory.org, cybernews.com, hackread.com, securityaffairs.com, darkreading.com, thehackernews.com, schneier.com, arstechnica.com, reddit.com/r/netsec, reddit.com/r/cybersecurity
 
 > **Note:** GitHub is searched via DuckDuckGo `site:github.com` dorks, which avoids the strict rate limits of the GitHub Search API. No GitHub token is required.
+>
+> **Note:** Report links include a "DDG search" link for each finding so you can verify the search that found it. These URLs are also passed to GenAI for context.
 
 ## GenAI Summarization
 
@@ -188,7 +218,8 @@ You don't need to include every setting. For example, to only change the delay:
     "search": {
         "daysBack": 30,
         "delaySeconds": 3,
-        "sources": ["DuckDuckGo", "Paste", "Breach"]
+        "sources": ["DuckDuckGo", "Paste", "Breach"],
+        "webProxyBase": "https://safe.menlosecurity.com"
     }
 }
 ```
@@ -205,6 +236,7 @@ You don't need to include every setting. For example, to only change the delay:
 | `search.daysBack` | `30` | Default days back for searches |
 | `search.delaySeconds` | `3` | Delay between DuckDuckGo requests (3+ recommended to avoid CAPTCHA) |
 | `search.sources` | `["DuckDuckGo", "Paste", "Breach"]` | Default sources to scan |
+| `search.webProxyBase` | `https://safe.menlosecurity.com` | Web isolation proxy base URL (used with `-UseProxy`) |
 
 ## Output
 
