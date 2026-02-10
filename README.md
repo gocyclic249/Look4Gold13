@@ -104,9 +104,11 @@ $env:GITHUB_TOKEN = "ghp_xxxx"
 | **DuckDuckGo** | HTML lite endpoint with `site:` and `filetype:` dorks | No |
 | **Paste Sites** | psbdmp.ws API + DuckDuckGo-indexed paste sites | No |
 | **GitHub** | Code, commits, and issues via GitHub Search API | Yes (token) |
+| **Breach Info** | DuckDuckGo searches across HIBP and security blogs | No |
 
-> **GitHub Rate Limits:** Even with a personal access token, the GitHub Search API is limited to **30 requests/minute**. The scanner pauses 6 seconds between searches (3 searches per keyword: code, commits, issues). With many keywords, you may still hit rate limits — the script will warn and continue with remaining sources.
-| **Breach Info** | HIBP breach database + security blog searches | No |
+> **GitHub Rate Limits:** Even with a personal access token, the GitHub Search API is limited to **30 requests/minute**. The scanner pauses 10 seconds between searches (3 searches per keyword: code, commits, issues). With many keywords, you may still hit rate limits — the script will warn and continue with remaining sources.
+>
+> **HIBP API:** The Have I Been Pwned API now requires a paid subscription. The scanner searches HIBP via DuckDuckGo instead.
 
 ## GenAI Summarization
 
