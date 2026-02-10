@@ -1,21 +1,62 @@
-# AU-13 Keywords File Template
+# AU-13 Keywords Example File
 # ================================================
 # Copy this file to the project root as 'keywords.txt'
-# and add your actual monitoring keywords.
+# and add your organization-specific keywords.
 #
 # IMPORTANT: The real keywords.txt is gitignored
 # to prevent accidental disclosure.
 #
 # Format: One keyword or phrase per line
-# Lines starting with # are comments and ignored
+# Lines starting with # are comments (ignored)
 # Blank lines are ignored
 # ================================================
 
-# Example keywords (replace with your own):
-# CompanyName
-# internal-project-codename
-# sensitive-system-name
-# employee-name@company.com
-# 192.168.1.0/24
-# API-KEY-PREFIX
-# secret-document-title
+# --- Leaked Credentials & Secrets ---
+password leak
+exposed credentials
+api key leaked
+hardcoded password
+secret key exposed
+
+# --- Data Breach Keywords ---
+data breach
+database dump
+data leak
+customer records exposed
+PII exposed
+
+# --- Common Infrastructure Leaks ---
+internal server error
+directory listing enabled
+.env file exposed
+config file exposed
+debug mode enabled
+
+# --- Cloud Misconfigurations ---
+S3 bucket public
+open elasticsearch
+exposed MongoDB
+unsecured database
+cloud misconfiguration
+
+# --- Source Code / Repo Leaks ---
+proprietary source code
+internal repository
+private repo exposed
+source code leak
+
+# --- Document Leaks ---
+confidential document
+internal memo
+not for distribution
+draft policy document
+
+# ================================================
+# ADD YOUR ORGANIZATION-SPECIFIC KEYWORDS BELOW
+# Examples:
+#   YourCompanyName
+#   internal-project-codename
+#   your-domain.com
+#   employee@company.com
+#   10.0.0.0/8
+# ================================================
