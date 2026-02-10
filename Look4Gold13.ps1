@@ -193,7 +193,7 @@ function Import-AU13Config {
         genai = @{
             endpoint         = 'https://api.genai.army.mil/server/query'
             tokenEnvVar      = 'GENAI_API_TOKEN'
-            model            = 'google-claude-45-sonnet'
+            model            = 'google-gemini-2.5-pro'
             persona          = 5
             temperature      = 0.7
             limit_references = 5
@@ -201,7 +201,7 @@ function Import-AU13Config {
         }
         search = @{
             daysBack     = 30
-            delaySeconds = 3
+            delaySeconds = 4
             sources      = @('DuckDuckGo', 'Paste', 'Breach')
             webProxyBase = 'https://safe.menlosecurity.com'
         }
@@ -249,33 +249,55 @@ function Search-DuckDuckGo {
 
         [int]$DaysBack = 30,
 
-        [int]$DelaySeconds = 2,
+        [int]$DelaySeconds = 4,
 
-        [string]$ProxyBase = ''
+        [string]$ProxyBase = '',
+
+        [ref]$CaptchaState
     )
 
     $results = @()
 
-    # Grouped dork queries — combines related site:/filetype: with OR to reduce
-    # request count while keeping queries short enough for DDG's HTML lite endpoint.
-    # DDG rejects queries that are too long once URL-encoded (especially through proxies).
-    $dorkGroups = @(
-        @{ Label = 'Paste sites (1/2)'; Query = 'site:pastebin.com OR site:paste.ee OR site:dpaste.org' },
-        @{ Label = 'Paste sites (2/2)'; Query = 'site:rentry.co OR site:justpaste.it OR site:controlc.com OR site:privatebin.net' },
-        @{ Label = 'Code/project';      Query = 'site:github.com OR site:trello.com' },
-        @{ Label = 'Documents';         Query = 'filetype:pdf OR filetype:xlsx OR filetype:csv OR filetype:doc' },
-        @{ Label = 'Config/sensitive';  Query = 'filetype:conf OR filetype:log OR filetype:sql OR filetype:env' }
+    # Individual dork queries — DDG HTML lite does not support OR/boolean operators.
+    # Priority-ordered: highest-risk disclosure sites first so if CAPTCHA cuts scan
+    # short, the most important sites have already been checked.
+    $dorks = @(
+        @{ Label = 'Pastebin';     Dork = 'site:pastebin.com' },
+        @{ Label = 'Paste.ee';     Dork = 'site:paste.ee' },
+        @{ Label = 'JustPaste.it'; Dork = 'site:justpaste.it' },
+        @{ Label = 'Rentry';       Dork = 'site:rentry.co' },
+        @{ Label = 'Dpaste';       Dork = 'site:dpaste.org' },
+        @{ Label = 'ControlC';     Dork = 'site:controlc.com' },
+        @{ Label = 'PrivateBin';   Dork = 'site:privatebin.net' },
+        @{ Label = 'GitHub';       Dork = 'site:github.com' },
+        @{ Label = 'Trello';       Dork = 'site:trello.com' },
+        @{ Label = 'PDF files';    Dork = 'filetype:pdf' },
+        @{ Label = 'Excel files';  Dork = 'filetype:xlsx' },
+        @{ Label = 'CSV files';    Dork = 'filetype:csv' },
+        @{ Label = 'Word docs';    Dork = 'filetype:doc' },
+        @{ Label = 'Config files'; Dork = 'filetype:conf' },
+        @{ Label = 'Log files';    Dork = 'filetype:log' },
+        @{ Label = 'SQL files';    Dork = 'filetype:sql' },
+        @{ Label = 'Env files';    Dork = 'filetype:env' }
     )
 
-    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($dorkGroups.Count) queries/keyword)..." -ForegroundColor Cyan
+    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($dorks.Count) queries/keyword, ${DelaySeconds}s delay)..." -ForegroundColor Cyan
 
     foreach ($keyword in $Keywords) {
         Write-Host "[DuckDuckGo] Searching for '$keyword'..." -ForegroundColor Gray
 
-        foreach ($group in $dorkGroups) {
-            $query = "`"$keyword`" $($group.Query)"
+        foreach ($dork in $dorks) {
+            # Check shared CAPTCHA state — skip if blocked by prior searches
+            if ($CaptchaState -and $CaptchaState.Value.Blocked) {
+                Write-Host "  [Blocked] Skipping remaining dorks (CAPTCHA)" -ForegroundColor Red
+                break
+            }
+
+            $query = "`"$keyword`" $($dork.Dork)"
             $encodedQuery = [System.Uri]::EscapeDataString($query)
             $ddgUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/?q=$encodedQuery" -ProxyBase $ProxyBase
+
+            $currentDelay = if ($CaptchaState) { $CaptchaState.Value.CurrentDelay } else { $DelaySeconds }
 
             try {
                 $reqParams = @{
@@ -287,36 +309,41 @@ function Search-DuckDuckGo {
                         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     }
                 }
-                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $DelaySeconds
+                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $currentDelay
                 $html = $webResponse.Content
 
                 # Detect DDG CAPTCHA/bot block (HTTP 202 with "select all squares")
                 if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal' -or $html -match 'cc=botnet') {
                     Write-Host "  [CAPTCHA] DDG rate limit hit - pausing 30s before continuing..." -ForegroundColor Yellow
+                    if ($CaptchaState) {
+                        $CaptchaState.Value.HitCount++
+                        $CaptchaState.Value.CurrentDelay = [math]::Min(10, $CaptchaState.Value.CurrentDelay + 2)
+                    }
                     Start-Sleep -Seconds 30
                     # Retry once after cooldown
                     $webResponse = Invoke-WebRequest @reqParams
                     $html = $webResponse.Content
                     if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal') {
                         Write-Host "  [CAPTCHA] Still blocked - skipping remaining dorks for '$keyword'" -ForegroundColor Red
+                        if ($CaptchaState) { $CaptchaState.Value.Blocked = $true }
                         break
                     }
                 }
 
                 # Detect DDG "query too long" error
                 if ($html -match 'too long') {
-                    Write-Host "  [Query Too Long] $($group.Label) - DDG rejected query length" -ForegroundColor DarkYellow
+                    Write-Host "  [Query Too Long] $($dork.Label) - DDG rejected query length" -ForegroundColor DarkYellow
                 }
                 # DDG lite returns result links in <a class="result__a"> tags
                 elseif ($html -match 'No results' -or $html -match 'No more results' -or $html -notmatch 'result__a') {
-                    Write-Host "  [No Results] $($group.Label)" -ForegroundColor DarkGray
+                    Write-Host "  [No Results] $($dork.Label)" -ForegroundColor DarkGray
                 }
                 else {
                     # Extract result links from DDG HTML
                     $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
 
                     if ($linkMatches.Count -gt 0) {
-                        Write-Host "  [Results: $($linkMatches.Count)] $($group.Label)" -ForegroundColor Green
+                        Write-Host "  [Results: $($linkMatches.Count)] $($dork.Label)" -ForegroundColor Green
                         foreach ($match in $linkMatches) {
                             $resultUrl = $match.Groups[1].Value
                             $resultTitle = $match.Groups[2].Value.Trim()
@@ -336,15 +363,15 @@ function Search-DuckDuckGo {
                         }
                     }
                     else {
-                        Write-Host "  [Parse Error] $($group.Label) - could not extract links" -ForegroundColor DarkYellow
+                        Write-Host "  [Parse Error] $($dork.Label) - could not extract links" -ForegroundColor DarkYellow
                     }
                 }
             }
             catch {
-                Write-Host "  [Error] $($group.Label) - $($_.Exception.Message)" -ForegroundColor DarkYellow
+                Write-Host "  [Error] $($dork.Label) - $($_.Exception.Message)" -ForegroundColor DarkYellow
             }
 
-            Start-Sleep -Seconds $DelaySeconds
+            Start-Sleep -Seconds $currentDelay
         }
     }
 
@@ -394,31 +421,52 @@ function Search-BreachInfo {
 
         [int]$DaysBack = 30,
 
-        [int]$DelaySeconds = 3,
+        [int]$DelaySeconds = 4,
 
-        [string]$ProxyBase = ''
+        [string]$ProxyBase = '',
+
+        [ref]$CaptchaState
     )
 
     $results = @()
 
-    # Breach/security sites grouped to keep DDG queries short
-    $breachGroups = @(
-        @{ Label = 'Breach DBs';        Query = 'site:haveibeenpwned.com OR site:databreaches.net OR site:breachdirectory.org' },
-        @{ Label = 'Security news (1)'; Query = 'site:krebsonsecurity.com OR site:bleepingcomputer.com OR site:therecord.media' },
-        @{ Label = 'Security news (2)'; Query = 'site:darkreading.com OR site:thehackernews.com OR site:securityweek.com' },
-        @{ Label = 'Security blogs';    Query = 'site:cybernews.com OR site:hackread.com OR site:securityaffairs.com OR site:schneier.com' },
-        @{ Label = 'Forums/media';      Query = 'site:reddit.com/r/netsec OR site:reddit.com/r/cybersecurity OR site:arstechnica.com' }
+    # Individual dork queries for breach/security sites — priority-ordered.
+    $breachDorks = @(
+        @{ Label = 'HIBP';             Dork = 'site:haveibeenpwned.com' },
+        @{ Label = 'DataBreaches.net'; Dork = 'site:databreaches.net' },
+        @{ Label = 'BreachDirectory';  Dork = 'site:breachdirectory.org' },
+        @{ Label = 'KrebsOnSecurity';  Dork = 'site:krebsonsecurity.com' },
+        @{ Label = 'BleepingComputer'; Dork = 'site:bleepingcomputer.com' },
+        @{ Label = 'TheRecord';        Dork = 'site:therecord.media' },
+        @{ Label = 'DarkReading';      Dork = 'site:darkreading.com' },
+        @{ Label = 'HackerNews';       Dork = 'site:thehackernews.com' },
+        @{ Label = 'SecurityWeek';     Dork = 'site:securityweek.com' },
+        @{ Label = 'CyberNews';        Dork = 'site:cybernews.com' },
+        @{ Label = 'HackRead';         Dork = 'site:hackread.com' },
+        @{ Label = 'SecurityAffairs';  Dork = 'site:securityaffairs.com' },
+        @{ Label = 'Schneier';         Dork = 'site:schneier.com' },
+        @{ Label = 'Reddit NetSec';    Dork = 'site:reddit.com/r/netsec' },
+        @{ Label = 'Reddit CyberSec'; Dork = 'site:reddit.com/r/cybersecurity' },
+        @{ Label = 'ArsTechnica';      Dork = 'site:arstechnica.com' }
     )
 
-    Write-Host "[BreachInfo] Searching $($breachGroups.Count) site groups/keyword..." -ForegroundColor Cyan
+    Write-Host "[BreachInfo] Searching $($breachDorks.Count) sites/keyword, ${DelaySeconds}s delay..." -ForegroundColor Cyan
 
     foreach ($keyword in $Keywords) {
         Write-Host "[BreachInfo] Searching for '$keyword'..." -ForegroundColor Gray
 
-        foreach ($group in $breachGroups) {
-            $query = "`"$keyword`" $($group.Query)"
+        foreach ($dork in $breachDorks) {
+            # Check shared CAPTCHA state — skip if blocked by prior searches
+            if ($CaptchaState -and $CaptchaState.Value.Blocked) {
+                Write-Host "  [Blocked] Skipping remaining dorks (CAPTCHA)" -ForegroundColor Red
+                break
+            }
+
+            $query = "`"$keyword`" $($dork.Dork)"
             $encodedQuery = [System.Uri]::EscapeDataString($query)
             $ddgUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/?q=$encodedQuery" -ProxyBase $ProxyBase
+
+            $currentDelay = if ($CaptchaState) { $CaptchaState.Value.CurrentDelay } else { $DelaySeconds }
 
             try {
                 $reqParams = @{
@@ -430,32 +478,37 @@ function Search-BreachInfo {
                         'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     }
                 }
-                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $DelaySeconds
+                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $currentDelay
                 $html = $webResponse.Content
 
                 # Detect CAPTCHA
                 if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal' -or $html -match 'cc=botnet') {
                     Write-Host "  [CAPTCHA] DDG rate limit hit - pausing 30s..." -ForegroundColor Yellow
+                    if ($CaptchaState) {
+                        $CaptchaState.Value.HitCount++
+                        $CaptchaState.Value.CurrentDelay = [math]::Min(10, $CaptchaState.Value.CurrentDelay + 2)
+                    }
                     Start-Sleep -Seconds 30
                     $webResponse = Invoke-WebRequest @reqParams
                     $html = $webResponse.Content
                     if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal') {
-                        Write-Host "  [CAPTCHA] Still blocked - skipping remaining groups for '$keyword'" -ForegroundColor Red
+                        Write-Host "  [CAPTCHA] Still blocked - skipping remaining dorks for '$keyword'" -ForegroundColor Red
+                        if ($CaptchaState) { $CaptchaState.Value.Blocked = $true }
                         break
                     }
                 }
 
                 if ($html -match 'too long') {
-                    Write-Host "  [Query Too Long] $($group.Label)" -ForegroundColor DarkYellow
+                    Write-Host "  [Query Too Long] $($dork.Label)" -ForegroundColor DarkYellow
                 }
                 elseif ($html -match 'No results' -or $html -match 'No more results' -or $html -notmatch 'result__a') {
-                    Write-Host "  [No Results] $($group.Label)" -ForegroundColor DarkGray
+                    Write-Host "  [No Results] $($dork.Label)" -ForegroundColor DarkGray
                 }
                 else {
                     $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
 
                     if ($linkMatches.Count -gt 0) {
-                        Write-Host "  [Results: $($linkMatches.Count)] $($group.Label)" -ForegroundColor Green
+                        Write-Host "  [Results: $($linkMatches.Count)] $($dork.Label)" -ForegroundColor Green
                         foreach ($match in $linkMatches) {
                             $resultUrl = $match.Groups[1].Value
                             $resultTitle = $match.Groups[2].Value.Trim()
@@ -476,10 +529,10 @@ function Search-BreachInfo {
                 }
             }
             catch {
-                Write-Host "  [Error] $($group.Label) - $($_.Exception.Message)" -ForegroundColor DarkYellow
+                Write-Host "  [Error] $($dork.Label) - $($_.Exception.Message)" -ForegroundColor DarkYellow
             }
 
-            Start-Sleep -Seconds $DelaySeconds
+            Start-Sleep -Seconds $currentDelay
         }
     }
 
@@ -496,8 +549,8 @@ function Invoke-GenAISummary {
         [Parameter(Mandatory)]
         [string]$Keyword,
 
-        [Parameter(Mandatory)]
-        [PSCustomObject[]]$Results,
+        [AllowEmptyCollection()]
+        [PSCustomObject[]]$Results = @(),
 
         [Parameter(Mandatory)]
         [hashtable]$GenAIConfig
@@ -505,7 +558,10 @@ function Invoke-GenAISummary {
 
     $token = [System.Environment]::GetEnvironmentVariable($GenAIConfig.tokenEnvVar)
     if (-not $token) {
-        return "GenAI summary unavailable - $($GenAIConfig.tokenEnvVar) environment variable not set."
+        return @{
+            Message    = "GenAI summary unavailable - $($GenAIConfig.tokenEnvVar) environment variable not set."
+            References = @()
+        }
     }
 
     $headers = @{
@@ -513,21 +569,36 @@ function Invoke-GenAISummary {
         'Content-Type'    = 'application/json'
     }
 
-    # Build a concise summary of findings for the AI
-    $resultSummary = $Results | ForEach-Object {
-        "- [$($_.Severity)] $($_.Source): $($_.Title) | URL: $($_.Url) | $($_.Snippet)"
-    }
-    $resultText = $resultSummary -join "`n"
+    # Build different prompts depending on whether we have scan results
+    if ($Results -and $Results.Count -gt 0) {
+        $resultSummary = $Results | ForEach-Object {
+            "- [$($_.Severity)] $($_.Source): $($_.Title) | URL: $($_.Url) | $($_.Snippet)"
+        }
+        $resultText = $resultSummary -join "`n"
 
-    $prompt = @"
+        $prompt = @"
 You are an AU-13 compliance analyst. Analyze the following scan results for the keyword "$Keyword" and provide:
 1. A brief risk assessment (1-2 sentences)
 2. Key findings summary (bullet points)
 3. Recommended actions
+4. Additional sources: Search the web for any additional public disclosures, data breaches, paste site leaks, or security incidents related to "$Keyword" that are NOT already in the scan results below. List each additional source with its URL and a brief description.
 
 Scan Results:
 $resultText
 "@
+    }
+    else {
+        $prompt = @"
+You are an AU-13 compliance analyst. The automated scan found NO results for "$Keyword" on monitored sites (paste sites, GitHub, breach databases, security news).
+
+Using your live search capability, search the web for any public disclosures, data breaches, paste site leaks, credential dumps, or security incidents related to "$Keyword". Provide:
+1. A brief risk assessment (1-2 sentences)
+2. Any findings from your search (with source URLs for each finding)
+3. Recommended actions
+
+If you find evidence of compromise or disclosure, list each source with its full URL.
+"@
+    }
 
     $body = @{
         message          = $prompt
@@ -539,25 +610,45 @@ $resultText
     } | ConvertTo-Json -Depth 3
 
     try {
-        Write-Host "[GenAI] Summarizing results for '$Keyword'..." -ForegroundColor Cyan
-        $response = Invoke-RestMethod -Uri $GenAIConfig.endpoint `
-            -Method Post `
-            -Headers $headers `
-            -Body $body `
-            -TimeoutSec 300
+        $action = if ($Results -and $Results.Count -gt 0) { "Summarizing" } else { "Searching for" }
+        Write-Host "[GenAI] $action '$Keyword'..." -ForegroundColor Cyan
+        $response = Invoke-RestMethodWithRetry -RequestParams @{
+            Uri         = $GenAIConfig.endpoint
+            Method      = 'Post'
+            Headers     = $headers
+            Body        = $body
+            TimeoutSec  = 300
+            ErrorAction = 'Stop'
+        } -MaxRetries 2 -BaseDelaySeconds 3
 
         Start-Sleep -Seconds 3
 
+        # Capture both message and references from API response
+        $refs = @()
+        if ($response.references) {
+            $refs = @($response.references)
+            Write-Host "[GenAI] Received $($refs.Count) reference(s) for '$Keyword'" -ForegroundColor Gray
+        }
+
         if ($response.message) {
-            return $response.message
+            return @{
+                Message    = $response.message
+                References = $refs
+            }
         }
         else {
-            return "GenAI returned an empty response."
+            return @{
+                Message    = "GenAI returned an empty response."
+                References = $refs
+            }
         }
     }
     catch {
-        Write-Warning "[GenAI] Error summarizing '$Keyword': $($_.Exception.Message)"
-        return "GenAI summary failed: $($_.Exception.Message)"
+        Write-Warning "[GenAI] Error for '$Keyword': $($_.Exception.Message)"
+        return @{
+            Message    = "GenAI summary failed: $($_.Exception.Message)"
+            References = @()
+        }
     }
 }
 
@@ -567,8 +658,8 @@ $resultText
 
 function Export-AU13Html {
     param(
-        [Parameter(Mandatory)]
-        [PSCustomObject[]]$Results,
+        [AllowEmptyCollection()]
+        [PSCustomObject[]]$Results = @(),
 
         [string]$OutputPath,
 
@@ -612,16 +703,30 @@ function Export-AU13Html {
         $severitySummaryHtml += "        <span class=`"severity-badge`" style=`"background:$color;`">$($group.Name): $($group.Count)</span>`n"
     }
 
-    # Build per-keyword result blocks
+    # Build per-keyword result blocks — include ALL keywords (even those with 0 DDG
+    # results) so GenAI summaries are always shown.
     $keywordBlocks = ""
-    $resultsByKeyword = $Results | Group-Object -Property Keyword
 
-    foreach ($kwGroup in $resultsByKeyword) {
-        $kw = [System.Web.HttpUtility]::HtmlEncode($kwGroup.Name)
-        $count = $kwGroup.Count
+    # Combine keywords from results + keywords from AI summaries to cover all
+    $allKeywordNames = @()
+    if ($Results -and $Results.Count -gt 0) {
+        $allKeywordNames += @($Results | ForEach-Object { $_.Keyword } | Select-Object -Unique)
+    }
+    foreach ($aiKey in $AISummaries.Keys) {
+        if ($aiKey -notin $allKeywordNames) { $allKeywordNames += $aiKey }
+    }
+    # Also include any keywords passed to the function
+    foreach ($inputKw in $Keywords) {
+        if ($inputKw -notin $allKeywordNames) { $allKeywordNames += $inputKw }
+    }
+
+    foreach ($kwName in $allKeywordNames) {
+        $kw = [System.Web.HttpUtility]::HtmlEncode($kwName)
+        $kwResults = @($Results | Where-Object { $_.Keyword -eq $kwName })
+        $count = $kwResults.Count
 
         $listItems = ""
-        foreach ($r in $kwGroup.Group) {
+        foreach ($r in $kwResults) {
             $title = [System.Web.HttpUtility]::HtmlEncode($r.Title)
             $url   = [System.Web.HttpUtility]::HtmlEncode($r.Url)
             $src   = [System.Web.HttpUtility]::HtmlEncode($r.Source)
@@ -655,23 +760,86 @@ function Export-AU13Html {
 
         # AI Summary block for this keyword
         $aiBlock = ""
-        if ($AISummaries.ContainsKey($kwGroup.Name)) {
-            $aiText = [System.Web.HttpUtility]::HtmlEncode($AISummaries[$kwGroup.Name]) -replace "`n", "<br>"
-            $aiBlock = @"
+        if ($AISummaries.ContainsKey($kwName)) {
+            $aiData = $AISummaries[$kwName]
+
+            if ($aiData -is [hashtable]) {
+                $aiText = [System.Web.HttpUtility]::HtmlEncode($aiData.Message) -replace "`n", "<br>"
+
+                # Render AI references as clickable source links
+                $refsHtml = ""
+                if ($aiData.References -and $aiData.References.Count -gt 0) {
+                    $refsHtml = "<h4>Sources Found by AI</h4><ul class=`"ai-refs`">"
+                    foreach ($ref in $aiData.References) {
+                        if ($ref -is [string]) {
+                            $refEnc = [System.Web.HttpUtility]::HtmlEncode($ref)
+                            if ($ref -match '^https?://') {
+                                $refsHtml += "<li><a href=`"$refEnc`" target=`"_blank`">$refEnc</a></li>"
+                            }
+                            else {
+                                $refsHtml += "<li>$refEnc</li>"
+                            }
+                        }
+                        elseif ($ref.url) {
+                            $refUrlEnc = [System.Web.HttpUtility]::HtmlEncode($ref.url)
+                            $refTitleEnc = if ($ref.title) { [System.Web.HttpUtility]::HtmlEncode($ref.title) } else { $refUrlEnc }
+                            $refsHtml += "<li><a href=`"$refUrlEnc`" target=`"_blank`">$refTitleEnc</a></li>"
+                        }
+                        elseif ($ref.source) {
+                            $refSrcEnc = [System.Web.HttpUtility]::HtmlEncode($ref.source)
+                            if ($ref.source -match '^https?://') {
+                                $refsHtml += "<li><a href=`"$refSrcEnc`" target=`"_blank`">$refSrcEnc</a></li>"
+                            }
+                            else {
+                                $refsHtml += "<li>$refSrcEnc</li>"
+                            }
+                        }
+                        else {
+                            $refStr = [System.Web.HttpUtility]::HtmlEncode(($ref | ConvertTo-Json -Compress))
+                            $refsHtml += "<li>$refStr</li>"
+                        }
+                    }
+                    $refsHtml += "</ul>"
+                }
+
+                $aiBlock = @"
+            <div class="ai-summary">
+                <h3>AI Analysis</h3>
+                <div class="ai-content">$aiText</div>
+                $refsHtml
+            </div>
+"@
+            }
+            else {
+                # Legacy: plain string format
+                $aiText = [System.Web.HttpUtility]::HtmlEncode($aiData) -replace "`n", "<br>"
+                $aiBlock = @"
             <div class="ai-summary">
                 <h3>AI Analysis</h3>
                 <div class="ai-content">$aiText</div>
             </div>
 "@
+            }
+        }
+
+        # Show result list or "no DDG results" message
+        $resultSection = ""
+        if ($count -gt 0) {
+            $resultSection = @"
+            <p class="result-count">Result Count: $count</p>
+            <ul>
+$listItems
+            </ul>
+"@
+        }
+        else {
+            $resultSection = "            <p class=`"result-count`" style=`"color:#999;`">No results from DDG scans</p>"
         }
 
         $keywordBlocks += @"
         <div class="query-block">
             <h2>Query: &quot;$kw&quot;</h2>
-            <p class="result-count">Result Count: $count</p>
-            <ul>
-$listItems
-            </ul>
+$resultSection
 $aiBlock
         </div>
 
@@ -705,6 +873,10 @@ $aiBlock
         .ai-summary { background: #f0f4ff; border-left: 4px solid #4a6cf7; padding: 12px 16px; margin-top: 12px; border-radius: 0 4px 4px 0; }
         .ai-summary h3 { margin: 0 0 8px 0; color: #4a6cf7; font-size: 0.95em; }
         .ai-content { font-size: 0.9em; line-height: 1.5; color: #444; }
+        .ai-summary h4 { margin: 12px 0 6px 0; color: #333; font-size: 0.9em; }
+        .ai-refs { padding-left: 20px; margin: 4px 0; list-style: disc; }
+        .ai-refs li { font-size: 0.85em; color: #555; padding: 2px 0; }
+        .ai-refs a { color: #0d6efd; }
         .footer { margin-top: 30px; text-align: center; font-size: 0.85em; color: #999; }
     </style>
 </head>
@@ -847,10 +1019,14 @@ Write-Host ""
 
 $allResults = @()
 
+# Shared CAPTCHA state across all DDG-based searches — if DuckDuckGo scanning
+# triggers CAPTCHA, the escalated delay carries over to BreachInfo queries.
+$captchaState = @{ HitCount = 0; CurrentDelay = $config.search.delaySeconds; Blocked = $false }
+
 # --- DuckDuckGo ---
 if ('DuckDuckGo' -in $Sources) {
     Write-Host "=== Scanning DuckDuckGo... ===" -ForegroundColor White
-    $ddgResults = Search-DuckDuckGo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase
+    $ddgResults = Search-DuckDuckGo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState)
     $allResults += $ddgResults
     Write-Host ""
 }
@@ -866,7 +1042,7 @@ if ('Paste' -in $Sources) {
 # --- Breach Info ---
 if ('Breach' -in $Sources) {
     Write-Host "=== Scanning Breach Sources... ===" -ForegroundColor White
-    $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase
+    $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState)
     $allResults += $breachResults
     Write-Host ""
 }
@@ -876,37 +1052,64 @@ Write-Host "=== Scan Complete ===" -ForegroundColor Green
 Write-Host ""
 
 if ($allResults.Count -eq 0) {
-    Write-Host "No results found across any sources." -ForegroundColor Green
-    exit 0
+    Write-Host "No results found from DDG scans. GenAI will search independently." -ForegroundColor Yellow
 }
-
-# Print summary by severity
-$grouped = $allResults | Group-Object -Property Severity
-Write-Host "Results Summary:" -ForegroundColor White
-foreach ($group in $grouped | Sort-Object Name) {
-    $color = switch ($group.Name) {
-        'Critical'      { 'Red' }
-        'High'          { 'Magenta' }
-        'Medium'        { 'Yellow' }
-        'Review'        { 'Cyan' }
-        'Manual-Review' { 'Gray' }
-        default         { 'White' }
+else {
+    # Print summary by severity
+    $grouped = $allResults | Group-Object -Property Severity
+    Write-Host "Results Summary:" -ForegroundColor White
+    foreach ($group in $grouped | Sort-Object Name) {
+        $color = switch ($group.Name) {
+            'Critical'      { 'Red' }
+            'High'          { 'Magenta' }
+            'Medium'        { 'Yellow' }
+            'Review'        { 'Cyan' }
+            'Manual-Review' { 'Gray' }
+            default         { 'White' }
+        }
+        Write-Host "  [$($group.Name)]: $($group.Count)" -ForegroundColor $color
     }
-    Write-Host "  [$($group.Name)]: $($group.Count)" -ForegroundColor $color
+    Write-Host "  Total: $($allResults.Count)" -ForegroundColor White
 }
-Write-Host "  Total: $($allResults.Count)" -ForegroundColor White
 Write-Host ""
 
-# --- GenAI Summarization (per keyword) ---
+# --- GenAI Summarization (per keyword — runs for ALL keywords, even with 0 DDG results) ---
 $aiSummaries = @{}
 $genaiTokenCheck = [System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)
 if ($genaiTokenCheck) {
     Write-Host "=== Running GenAI Analysis... ===" -ForegroundColor White
-    $resultsByKeyword = $allResults | Group-Object -Property Keyword
 
-    foreach ($kwGroup in $resultsByKeyword) {
-        $summary = Invoke-GenAISummary -Keyword $kwGroup.Name -Results $kwGroup.Group -GenAIConfig $config.genai
-        $aiSummaries[$kwGroup.Name] = $summary
+    foreach ($kw in $keywords) {
+        $kwResults = @($allResults | Where-Object { $_.Keyword -eq $kw })
+        $summary = Invoke-GenAISummary -Keyword $kw -Results $kwResults -GenAIConfig $config.genai
+        $aiSummaries[$kw] = $summary
+
+        # Add GenAI-discovered references as scan results
+        if ($summary -is [hashtable] -and $summary.References -and $summary.References.Count -gt 0) {
+            foreach ($ref in $summary.References) {
+                $refUrl = ''
+                $refTitle = 'AI-discovered source'
+                if ($ref -is [string] -and $ref -match '^https?://') {
+                    $refUrl = $ref
+                }
+                elseif ($ref.url) {
+                    $refUrl = $ref.url
+                    if ($ref.title) { $refTitle = $ref.title }
+                }
+                elseif ($ref.source) {
+                    $refUrl = $ref.source
+                }
+                if ($refUrl) {
+                    $allResults += New-AU13Result `
+                        -Source 'GenAI-Live' `
+                        -Keyword $kw `
+                        -Title $refTitle `
+                        -Url $refUrl `
+                        -Snippet "Found by Ask Sage live search" `
+                        -Severity 'Review'
+                }
+            }
+        }
     }
     Write-Host ""
 }
