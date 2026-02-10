@@ -90,8 +90,12 @@ Use the `-Silent` flag with parameters for automated/scheduled runs:
 | Source | Method | Auth Required |
 |---|---|---|
 | **DuckDuckGo** | HTML lite endpoint with `site:` and `filetype:` dorks (includes `site:github.com`) | No |
-| **Paste Sites** | psbdmp.ws API + DuckDuckGo-indexed paste sites | No |
-| **Breach Info** | DuckDuckGo searches across security/breach blogs | No |
+| **Paste Sites** | psbdmp.ws API + DuckDuckGo-indexed paste sites (Pastebin, Paste.ee, Ghostbin, Dpaste, Rentry, JustPaste.it, ControlC, PrivateBin) | No |
+| **Breach Info** | DuckDuckGo searches across 19 security/breach blogs and forums | No |
+
+### Security Blogs & Breach Sites Monitored
+
+haveibeenpwned.com, krebsonsecurity.com, bleepingcomputer.com, securityweek.com, therecord.media, databreaches.net, breachdirectory.org, cybernews.com, hackread.com, securityaffairs.com, darkreading.com, thehackernews.com, schneier.com, grahamcluley.com, csoonline.com, infosecurity-magazine.com, arstechnica.com, reddit.com/r/netsec, reddit.com/r/cybersecurity
 
 > **Note:** GitHub is searched via DuckDuckGo `site:github.com` dorks, which avoids the strict rate limits of the GitHub Search API. No GitHub token is required.
 

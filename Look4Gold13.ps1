@@ -173,6 +173,10 @@ function Search-DuckDuckGo {
         '"{keyword}" site:trello.com',
         '"{keyword}" site:paste.ee',
         '"{keyword}" site:dpaste.org',
+        '"{keyword}" site:rentry.co',
+        '"{keyword}" site:justpaste.it',
+        '"{keyword}" site:controlc.com',
+        '"{keyword}" site:privatebin.net',
         '"{keyword}" filetype:pdf',
         '"{keyword}" filetype:xlsx',
         '"{keyword}" filetype:csv',
@@ -298,10 +302,14 @@ function Search-PasteSites {
         }
 
         $pasteSites = @(
-            @{ Name = 'Pastebin';  Url = "https://html.duckduckgo.com/html/?q=site:pastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Paste.ee';  Url = "https://html.duckduckgo.com/html/?q=site:paste.ee+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Ghostbin';  Url = "https://html.duckduckgo.com/html/?q=site:ghostbin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Dpaste';    Url = "https://html.duckduckgo.com/html/?q=site:dpaste.org+%22$([System.Uri]::EscapeDataString($keyword))%22" }
+            @{ Name = 'Pastebin';     Url = "https://html.duckduckgo.com/html/?q=site:pastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Paste.ee';     Url = "https://html.duckduckgo.com/html/?q=site:paste.ee+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Ghostbin';     Url = "https://html.duckduckgo.com/html/?q=site:ghostbin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Dpaste';       Url = "https://html.duckduckgo.com/html/?q=site:dpaste.org+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Rentry';       Url = "https://html.duckduckgo.com/html/?q=site:rentry.co+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'JustPaste.it'; Url = "https://html.duckduckgo.com/html/?q=site:justpaste.it+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'ControlC';     Url = "https://html.duckduckgo.com/html/?q=site:controlc.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'PrivateBin';   Url = "https://html.duckduckgo.com/html/?q=site:privatebin.net+%22$([System.Uri]::EscapeDataString($keyword))%22" }
         )
 
         Write-Host "[PasteSites] Manual search URLs for '$keyword':" -ForegroundColor Gray
@@ -330,14 +338,22 @@ function Search-BreachInfo {
         'haveibeenpwned.com',
         'krebsonsecurity.com',
         'bleepingcomputer.com',
-        'threatpost.com',
         'securityweek.com',
         'therecord.media',
         'databreaches.net',
         'breachdirectory.org',
         'cybernews.com',
         'hackread.com',
-        'securityaffairs.com'
+        'securityaffairs.com',
+        'darkreading.com',
+        'thehackernews.com',
+        'schneier.com',
+        'grahamcluley.com',
+        'csoonline.com',
+        'infosecurity-magazine.com',
+        'arstechnica.com',
+        'reddit.com/r/netsec',
+        'reddit.com/r/cybersecurity'
     )
 
     foreach ($keyword in $Keywords) {

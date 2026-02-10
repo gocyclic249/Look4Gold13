@@ -71,10 +71,14 @@ function Search-PasteSites {
 
         # --- Fallback: generate manual search URLs for other paste sites ---
         $pasteSites = @(
-            @{ Name = 'Pastebin';  Url = "https://www.google.com/search?q=site:pastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
-            @{ Name = 'Paste.ee';  Url = "https://www.google.com/search?q=site:paste.ee+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
-            @{ Name = 'Ghostbin';  Url = "https://www.google.com/search?q=site:ghostbin.com+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
-            @{ Name = 'Dpaste';    Url = "https://www.google.com/search?q=site:dpaste.org+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" }
+            @{ Name = 'Pastebin';     Url = "https://www.google.com/search?q=site:pastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
+            @{ Name = 'Paste.ee';     Url = "https://www.google.com/search?q=site:paste.ee+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
+            @{ Name = 'Ghostbin';     Url = "https://www.google.com/search?q=site:ghostbin.com+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
+            @{ Name = 'Dpaste';       Url = "https://www.google.com/search?q=site:dpaste.org+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
+            @{ Name = 'Rentry';       Url = "https://www.google.com/search?q=site:rentry.co+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
+            @{ Name = 'JustPaste.it'; Url = "https://www.google.com/search?q=site:justpaste.it+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
+            @{ Name = 'ControlC';     Url = "https://www.google.com/search?q=site:controlc.com+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" },
+            @{ Name = 'PrivateBin';   Url = "https://www.google.com/search?q=site:privatebin.net+%22$([System.Uri]::EscapeDataString($keyword))%22&tbs=qdr:d$DaysBack" }
         )
 
         Write-Host "[PasteSites] Manual search URLs for '$keyword':" -ForegroundColor Gray
