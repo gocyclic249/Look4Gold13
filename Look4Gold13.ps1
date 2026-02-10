@@ -257,28 +257,26 @@ function Search-DuckDuckGo {
     )
 
     $results = @()
+    $seenUrls = @{}  # Dedup across queries
 
-    # Individual dork queries — DDG HTML lite does not support OR/boolean operators.
-    # Priority-ordered: highest-risk disclosure sites first so if CAPTCHA cuts scan
-    # short, the most important sites have already been checked.
+    # Broad contextual queries first (most effective — DDG returns top results from any site).
+    # Then targeted site: queries for high-priority sites that may not surface in broad search.
+    # Finally filetype: queries for document exposure.
     $dorks = @(
-        @{ Label = 'Pastebin';     Dork = 'site:pastebin.com' },
-        @{ Label = 'Paste.ee';     Dork = 'site:paste.ee' },
-        @{ Label = 'JustPaste.it'; Dork = 'site:justpaste.it' },
-        @{ Label = 'Rentry';       Dork = 'site:rentry.co' },
-        @{ Label = 'Dpaste';       Dork = 'site:dpaste.org' },
-        @{ Label = 'ControlC';     Dork = 'site:controlc.com' },
-        @{ Label = 'PrivateBin';   Dork = 'site:privatebin.net' },
-        @{ Label = 'GitHub';       Dork = 'site:github.com' },
-        @{ Label = 'Trello';       Dork = 'site:trello.com' },
-        @{ Label = 'PDF files';    Dork = 'filetype:pdf' },
-        @{ Label = 'Excel files';  Dork = 'filetype:xlsx' },
-        @{ Label = 'CSV files';    Dork = 'filetype:csv' },
-        @{ Label = 'Word docs';    Dork = 'filetype:doc' },
-        @{ Label = 'Config files'; Dork = 'filetype:conf' },
-        @{ Label = 'Log files';    Dork = 'filetype:log' },
-        @{ Label = 'SQL files';    Dork = 'filetype:sql' },
-        @{ Label = 'Env files';    Dork = 'filetype:env' }
+        # Broad: catches breach news, HIBP, security articles, etc.
+        @{ Label = 'Breach/leak mentions'; Dork = 'breach data leak exposed' },
+        # Broad: paste site and credential exposure
+        @{ Label = 'Paste/credential';     Dork = 'pastebin paste credential dump' },
+        # Broad: code and project exposure
+        @{ Label = 'Code exposure';        Dork = 'github code exposed repository' },
+        # Targeted: high-priority sites that may not surface in broad search
+        @{ Label = 'Pastebin';             Dork = 'site:pastebin.com' },
+        @{ Label = 'GitHub';               Dork = 'site:github.com' },
+        # Document exposure
+        @{ Label = 'PDF files';            Dork = 'filetype:pdf' },
+        @{ Label = 'Excel files';          Dork = 'filetype:xlsx' },
+        @{ Label = 'Word docs';            Dork = 'filetype:doc' },
+        @{ Label = 'CSV files';            Dork = 'filetype:csv' }
     )
 
     Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($dorks.Count) queries/keyword, ${DelaySeconds}s delay)..." -ForegroundColor Cyan
@@ -343,7 +341,7 @@ function Search-DuckDuckGo {
                     $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
 
                     if ($linkMatches.Count -gt 0) {
-                        Write-Host "  [Results: $($linkMatches.Count)] $($dork.Label)" -ForegroundColor Green
+                        $newCount = 0
                         foreach ($match in $linkMatches) {
                             $resultUrl = $match.Groups[1].Value
                             $resultTitle = $match.Groups[2].Value.Trim()
@@ -353,6 +351,12 @@ function Search-DuckDuckGo {
                                 $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
                             }
 
+                            # Dedup by URL
+                            $urlKey = "$keyword|$resultUrl"
+                            if ($seenUrls.ContainsKey($urlKey)) { continue }
+                            $seenUrls[$urlKey] = $true
+                            $newCount++
+
                             $results += New-AU13Result `
                                 -Source 'DuckDuckGo' `
                                 -Keyword $keyword `
@@ -361,6 +365,7 @@ function Search-DuckDuckGo {
                                 -Snippet "DDG search: $ddgUrl" `
                                 -Severity 'Review'
                         }
+                        Write-Host "  [Results: $newCount new] $($dork.Label)" -ForegroundColor Green
                     }
                     else {
                         Write-Host "  [Parse Error] $($dork.Label) - could not extract links" -ForegroundColor DarkYellow
@@ -375,7 +380,7 @@ function Search-DuckDuckGo {
         }
     }
 
-    Write-Host "[DuckDuckGo] Found $($results.Count) results" -ForegroundColor Cyan
+    Write-Host "[DuckDuckGo] Found $($results.Count) unique results" -ForegroundColor Cyan
     return $results
 }
 
@@ -429,28 +434,22 @@ function Search-BreachInfo {
     )
 
     $results = @()
+    $seenUrls = @{}  # Dedup across queries
 
-    # Individual dork queries for breach/security sites — priority-ordered.
+    # Broad contextual queries first, then targeted high-priority breach sites.
     $breachDorks = @(
-        @{ Label = 'HIBP';             Dork = 'site:haveibeenpwned.com' },
-        @{ Label = 'DataBreaches.net'; Dork = 'site:databreaches.net' },
-        @{ Label = 'BreachDirectory';  Dork = 'site:breachdirectory.org' },
-        @{ Label = 'KrebsOnSecurity';  Dork = 'site:krebsonsecurity.com' },
-        @{ Label = 'BleepingComputer'; Dork = 'site:bleepingcomputer.com' },
-        @{ Label = 'TheRecord';        Dork = 'site:therecord.media' },
-        @{ Label = 'DarkReading';      Dork = 'site:darkreading.com' },
-        @{ Label = 'HackerNews';       Dork = 'site:thehackernews.com' },
-        @{ Label = 'SecurityWeek';     Dork = 'site:securityweek.com' },
-        @{ Label = 'CyberNews';        Dork = 'site:cybernews.com' },
-        @{ Label = 'HackRead';         Dork = 'site:hackread.com' },
-        @{ Label = 'SecurityAffairs';  Dork = 'site:securityaffairs.com' },
-        @{ Label = 'Schneier';         Dork = 'site:schneier.com' },
-        @{ Label = 'Reddit NetSec';    Dork = 'site:reddit.com/r/netsec' },
-        @{ Label = 'Reddit CyberSec'; Dork = 'site:reddit.com/r/cybersecurity' },
-        @{ Label = 'ArsTechnica';      Dork = 'site:arstechnica.com' }
+        # Broad: general breach/leak news — catches HIBP, BleepingComputer, SecurityWeek, etc.
+        @{ Label = 'Breach/leak news';    Dork = 'breach data leak compromised' },
+        # Broad: ransomware and attack news
+        @{ Label = 'Ransomware/attacks';  Dork = 'ransomware attack security incident' },
+        # Broad: credential/dark web exposure
+        @{ Label = 'Credential exposure'; Dork = 'credential stolen dark web' },
+        # Targeted: highest-priority breach sites that may not surface in broad search
+        @{ Label = 'Have I Been Pwned';   Dork = 'site:haveibeenpwned.com' },
+        @{ Label = 'DataBreaches.net';    Dork = 'site:databreaches.net' }
     )
 
-    Write-Host "[BreachInfo] Searching $($breachDorks.Count) sites/keyword, ${DelaySeconds}s delay..." -ForegroundColor Cyan
+    Write-Host "[BreachInfo] Searching $($breachDorks.Count) queries/keyword, ${DelaySeconds}s delay..." -ForegroundColor Cyan
 
     foreach ($keyword in $Keywords) {
         Write-Host "[BreachInfo] Searching for '$keyword'..." -ForegroundColor Gray
@@ -508,7 +507,7 @@ function Search-BreachInfo {
                     $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
 
                     if ($linkMatches.Count -gt 0) {
-                        Write-Host "  [Results: $($linkMatches.Count)] $($dork.Label)" -ForegroundColor Green
+                        $newCount = 0
                         foreach ($match in $linkMatches) {
                             $resultUrl = $match.Groups[1].Value
                             $resultTitle = $match.Groups[2].Value.Trim()
@@ -516,6 +515,12 @@ function Search-BreachInfo {
                             if ($resultUrl -match 'uddg=([^&]+)') {
                                 $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
                             }
+
+                            # Dedup by URL
+                            $urlKey = "$keyword|$resultUrl"
+                            if ($seenUrls.ContainsKey($urlKey)) { continue }
+                            $seenUrls[$urlKey] = $true
+                            $newCount++
 
                             $results += New-AU13Result `
                                 -Source "BreachBlog" `
@@ -525,6 +530,7 @@ function Search-BreachInfo {
                                 -Snippet "DDG search: $ddgUrl" `
                                 -Severity 'High'
                         }
+                        Write-Host "  [Results: $newCount new] $($dork.Label)" -ForegroundColor Green
                     }
                 }
             }
@@ -536,7 +542,7 @@ function Search-BreachInfo {
         }
     }
 
-    Write-Host "[BreachInfo] Found $($results.Count) results" -ForegroundColor Cyan
+    Write-Host "[BreachInfo] Found $($results.Count) unique results" -ForegroundColor Cyan
     return $results
 }
 
