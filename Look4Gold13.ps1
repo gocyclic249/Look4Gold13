@@ -335,6 +335,67 @@ function Search-PasteSites {
     return $results
 }
 
+function Invoke-GitHubSearch {
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [Parameter(Mandatory)][hashtable]$Headers,
+        [string]$SearchType = 'search',
+        [int]$MaxRetries = 2
+    )
+
+    for ($attempt = 0; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            $response = Invoke-WebRequest -Uri $Uri -Headers $Headers -Method Get -TimeoutSec 30 -ErrorAction Stop
+
+            # Check rate limit remaining from response headers
+            $remaining = $response.Headers['X-RateLimit-Remaining']
+            $resetEpoch = $response.Headers['X-RateLimit-Reset']
+            if ($remaining -and [int]$remaining -le 2) {
+                $resetTime = [DateTimeOffset]::FromUnixTimeSeconds([long]$resetEpoch).LocalDateTime
+                $waitSec = [math]::Max(1, ($resetTime - (Get-Date)).TotalSeconds)
+                Write-Host "[GitHub] Rate limit low ($remaining left). Waiting $([math]::Ceiling($waitSec))s for reset..." -ForegroundColor Yellow
+                Start-Sleep -Seconds ([math]::Ceiling($waitSec))
+            }
+
+            return ($response.Content | ConvertFrom-Json)
+        }
+        catch {
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+
+            if ($statusCode -eq 401) {
+                Write-Warning "[GitHub] Authentication failed. Check your GitHub token."
+                return $null
+            }
+            elseif ($statusCode -eq 403 -or ($_.Exception.Message -match '403')) {
+                if ($attempt -lt $MaxRetries) {
+                    # Check Retry-After header, default to 60s
+                    $retryAfter = 60
+                    if ($_.Exception.Response.Headers) {
+                        try {
+                            $ra = $_.Exception.Response.Headers | Where-Object { $_.Key -eq 'Retry-After' }
+                            if ($ra) { $retryAfter = [int]$ra.Value[0] }
+                        } catch {}
+                    }
+                    Write-Host "[GitHub] Rate limited on $SearchType (attempt $($attempt + 1)/$($MaxRetries + 1)). Waiting ${retryAfter}s..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds $retryAfter
+                }
+                else {
+                    Write-Warning "[GitHub] Rate limited on $SearchType after $($MaxRetries + 1) attempts. Skipping."
+                    return $null
+                }
+            }
+            else {
+                Write-Warning "[GitHub] $SearchType error: $($_.Exception.Message)"
+                return $null
+            }
+        }
+    }
+    return $null
+}
+
 function Search-GitHubExposure {
     param(
         [Parameter(Mandatory)]
@@ -358,107 +419,72 @@ function Search-GitHubExposure {
     foreach ($keyword in $Keywords) {
         $encodedKeyword = [System.Uri]::EscapeDataString("`"$keyword`"")
 
-        # --- Code search ---
-        try {
-            $codeUri = "https://api.github.com/search/code?q=$encodedKeyword&sort=indexed&order=desc&per_page=20"
-            Write-Verbose "[GitHub] Code search for '$keyword'..."
+        # --- Code search (most restrictive rate limit - ~10 req/min) ---
+        $codeUri = "https://api.github.com/search/code?q=$encodedKeyword&sort=indexed&order=desc&per_page=10"
+        Write-Verbose "[GitHub] Code search for '$keyword'..."
 
-            $codeResponse = Invoke-RestMethod -Uri $codeUri -Headers $headers -Method Get -TimeoutSec 20 -ErrorAction Stop
+        $codeResponse = Invoke-GitHubSearch -Uri $codeUri -Headers $headers -SearchType "code search for '$keyword'"
 
-            if ($codeResponse.items) {
-                foreach ($item in $codeResponse.items) {
-                    $results += New-AU13Result `
-                        -Source 'GitHub-Code' `
-                        -Keyword $keyword `
-                        -Title "$($item.repository.full_name) - $($item.name)" `
-                        -Url $item.html_url `
-                        -Snippet "File: $($item.path) in repo $($item.repository.full_name)" `
-                        -Severity 'High'
-                }
+        if ($codeResponse -and $codeResponse.items) {
+            foreach ($item in $codeResponse.items) {
+                $results += New-AU13Result `
+                    -Source 'GitHub-Code' `
+                    -Keyword $keyword `
+                    -Title "$($item.repository.full_name) - $($item.name)" `
+                    -Url $item.html_url `
+                    -Snippet "File: $($item.path) in repo $($item.repository.full_name)" `
+                    -Severity 'High'
             }
-
             Write-Verbose "[GitHub] Code search returned $($codeResponse.total_count) total results"
         }
-        catch {
-            if ($_.Exception.Message -match '401') {
-                Write-Warning "[GitHub] Authentication failed. Check your GitHub token."
-                break
-            }
-            elseif ($_.Exception.Message -match '403') {
-                Write-Warning "[GitHub] Rate limited on code search."
-            }
-            else {
-                Write-Warning "[GitHub] Code search error for '$keyword': $($_.Exception.Message)"
-            }
-        }
 
-        Start-Sleep -Seconds 10
+        Start-Sleep -Seconds 12
 
         # --- Commits search ---
-        try {
-            $commitUri = "https://api.github.com/search/commits?q=$encodedKeyword+committer-date:>$dateFilter&sort=committer-date&order=desc&per_page=20"
-            Write-Verbose "[GitHub] Commit search for '$keyword'..."
+        $commitUri = "https://api.github.com/search/commits?q=$encodedKeyword+committer-date:>$dateFilter&sort=committer-date&order=desc&per_page=20"
+        Write-Verbose "[GitHub] Commit search for '$keyword'..."
 
-            $commitHeaders = $headers.Clone()
-            $commitHeaders['Accept'] = 'application/vnd.github.cloak-preview+json'
+        $commitHeaders = $headers.Clone()
+        $commitHeaders['Accept'] = 'application/vnd.github.cloak-preview+json'
 
-            $commitResponse = Invoke-RestMethod -Uri $commitUri -Headers $commitHeaders -Method Get -TimeoutSec 20 -ErrorAction Stop
+        $commitResponse = Invoke-GitHubSearch -Uri $commitUri -Headers $commitHeaders -SearchType "commit search for '$keyword'"
 
-            if ($commitResponse.items) {
-                foreach ($item in $commitResponse.items) {
-                    $commitDate = if ($item.commit.committer.date) { $item.commit.committer.date } else { '' }
-                    $results += New-AU13Result `
-                        -Source 'GitHub-Commit' `
-                        -Keyword $keyword `
-                        -Title "$($item.repository.full_name) - $($item.commit.message | Select-Object -First 1)" `
-                        -Url $item.html_url `
-                        -Snippet "Commit by $($item.commit.committer.name) on $commitDate" `
-                        -DateFound $commitDate `
-                        -Severity 'High'
-                }
-            }
-        }
-        catch {
-            if ($_.Exception.Message -match '403') {
-                Write-Warning "[GitHub] Rate limited on commit search."
-            }
-            else {
-                Write-Warning "[GitHub] Commit search error for '$keyword': $($_.Exception.Message)"
+        if ($commitResponse -and $commitResponse.items) {
+            foreach ($item in $commitResponse.items) {
+                $commitDate = if ($item.commit.committer.date) { $item.commit.committer.date } else { '' }
+                $results += New-AU13Result `
+                    -Source 'GitHub-Commit' `
+                    -Keyword $keyword `
+                    -Title "$($item.repository.full_name) - $($item.commit.message | Select-Object -First 1)" `
+                    -Url $item.html_url `
+                    -Snippet "Commit by $($item.commit.committer.name) on $commitDate" `
+                    -DateFound $commitDate `
+                    -Severity 'High'
             }
         }
 
-        Start-Sleep -Seconds 10
+        Start-Sleep -Seconds 12
 
         # --- Issues search ---
-        try {
-            $issueUri = "https://api.github.com/search/issues?q=$encodedKeyword+created:>$dateFilter&sort=created&order=desc&per_page=20"
-            Write-Verbose "[GitHub] Issue search for '$keyword'..."
+        $issueUri = "https://api.github.com/search/issues?q=$encodedKeyword+created:>$dateFilter&sort=created&order=desc&per_page=20"
+        Write-Verbose "[GitHub] Issue search for '$keyword'..."
 
-            $issueResponse = Invoke-RestMethod -Uri $issueUri -Headers $headers -Method Get -TimeoutSec 20 -ErrorAction Stop
+        $issueResponse = Invoke-GitHubSearch -Uri $issueUri -Headers $headers -SearchType "issue search for '$keyword'"
 
-            if ($issueResponse.items) {
-                foreach ($item in $issueResponse.items) {
-                    $results += New-AU13Result `
-                        -Source 'GitHub-Issue' `
-                        -Keyword $keyword `
-                        -Title "$($item.title)" `
-                        -Url $item.html_url `
-                        -Snippet ($item.body | Select-Object -First 1) `
-                        -DateFound $item.created_at `
-                        -Severity 'Medium'
-                }
-            }
-        }
-        catch {
-            if ($_.Exception.Message -match '403') {
-                Write-Warning "[GitHub] Rate limited on issue search."
-            }
-            else {
-                Write-Warning "[GitHub] Issue search error for '$keyword': $($_.Exception.Message)"
+        if ($issueResponse -and $issueResponse.items) {
+            foreach ($item in $issueResponse.items) {
+                $results += New-AU13Result `
+                    -Source 'GitHub-Issue' `
+                    -Keyword $keyword `
+                    -Title "$($item.title)" `
+                    -Url $item.html_url `
+                    -Snippet ($item.body | Select-Object -First 1) `
+                    -DateFound $item.created_at `
+                    -Severity 'Medium'
             }
         }
 
-        Start-Sleep -Seconds 10
+        Start-Sleep -Seconds 12
     }
 
     Write-Host "[GitHub] Found $($results.Count) results" -ForegroundColor Cyan
@@ -491,16 +517,6 @@ function Search-BreachInfo {
 
     foreach ($keyword in $Keywords) {
         $encodedKeyword = [System.Uri]::EscapeDataString("`"$keyword`"")
-
-        # --- Have I Been Pwned (search via DuckDuckGo - HIBP API now requires paid key) ---
-        $hibpSearchUrl = "https://html.duckduckgo.com/html/?q=site:haveibeenpwned.com+$encodedKeyword"
-        $results += New-AU13Result `
-            -Source 'HIBP-Search' `
-            -Keyword $keyword `
-            -Title "HIBP: Search haveibeenpwned.com for '$keyword'" `
-            -Url $hibpSearchUrl `
-            -Snippet "Search Have I Been Pwned for breach mentions (HIBP API requires paid subscription)" `
-            -Severity 'Review'
 
         # --- DuckDuckGo searches across security blogs ---
         $combinedSites = ($breachSites | ForEach-Object { "site:$_" }) -join ' OR '
