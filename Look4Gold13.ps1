@@ -193,7 +193,7 @@ function Import-AU13Config {
         genai = @{
             endpoint         = 'https://api.genai.army.mil/server/query'
             tokenEnvVar      = 'GENAI_API_TOKEN'
-            model            = 'google-claude-45-sonnet'
+            model            = 'google-gemini-2.5-pro'
             persona          = 5
             temperature      = 0.7
             limit_references = 5
