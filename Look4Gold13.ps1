@@ -39,8 +39,75 @@ param(
 )
 
 # ============================================================================
+# TLS CONFIGURATION
+# ============================================================================
+
+# Force TLS 1.2 — fixes "The underlying connection was closed" errors
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+function Invoke-WebRequestWithRetry {
+    param(
+        [Parameter(Mandatory)][hashtable]$RequestParams,
+        [int]$MaxRetries = 3,
+        [int]$BaseDelaySeconds = 2
+    )
+
+    for ($attempt = 1; $attempt -le ($MaxRetries + 1); $attempt++) {
+        try {
+            return Invoke-WebRequest @RequestParams
+        }
+        catch {
+            $isRetryable = $_.Exception.Message -match 'connection was closed' -or
+                           $_.Exception.Message -match 'Unable to connect' -or
+                           $_.Exception.Message -match 'timed out' -or
+                           $_.Exception.Message -match '429' -or
+                           $_.Exception.Message -match '503'
+
+            if ($isRetryable -and $attempt -le $MaxRetries) {
+                $delay = $BaseDelaySeconds * [math]::Pow(2, $attempt - 1)
+                Write-Host "  [Retry $attempt/$MaxRetries] Waiting ${delay}s..." -ForegroundColor Yellow
+                Start-Sleep -Seconds $delay
+            }
+            else {
+                throw
+            }
+        }
+    }
+}
+
+function Invoke-RestMethodWithRetry {
+    param(
+        [Parameter(Mandatory)][hashtable]$RequestParams,
+        [int]$MaxRetries = 3,
+        [int]$BaseDelaySeconds = 2
+    )
+
+    for ($attempt = 1; $attempt -le ($MaxRetries + 1); $attempt++) {
+        try {
+            return Invoke-RestMethod @RequestParams
+        }
+        catch {
+            $isRetryable = $_.Exception.Message -match 'connection was closed' -or
+                           $_.Exception.Message -match 'Unable to connect' -or
+                           $_.Exception.Message -match 'timed out' -or
+                           $_.Exception.Message -match '429' -or
+                           $_.Exception.Message -match '503'
+
+            if ($isRetryable -and $attempt -le $MaxRetries) {
+                $delay = $BaseDelaySeconds * [math]::Pow(2, $attempt - 1)
+                Write-Host "  [Retry $attempt/$MaxRetries] Waiting ${delay}s..." -ForegroundColor Yellow
+                Start-Sleep -Seconds $delay
+            }
+            else {
+                throw
+            }
+        }
+    }
+}
 
 function New-AU13Result {
     param(
@@ -197,9 +264,16 @@ function Search-DuckDuckGo {
             $ddgUrl = "https://html.duckduckgo.com/html/?q=$encodedQuery"
 
             try {
-                $webResponse = Invoke-WebRequest -Uri $ddgUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop -Headers @{
-                    'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                $reqParams = @{
+                    Uri             = $ddgUrl
+                    UseBasicParsing = $true
+                    TimeoutSec      = 15
+                    ErrorAction     = 'Stop'
+                    Headers         = @{
+                        'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
                 }
+                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $DelaySeconds
                 $html = $webResponse.Content
 
                 # DDG lite returns result links in <a class="result__a"> tags
@@ -264,7 +338,13 @@ function Search-PasteSites {
             $uri = "https://psbdmp.ws/api/v3/search/$encodedKeyword"
 
             Write-Verbose "[PasteSites] Querying psbdmp.ws for '$keyword'..."
-            $response = Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 30 -ErrorAction Stop
+            $reqParams = @{
+                Uri         = $uri
+                Method      = 'Get'
+                TimeoutSec  = 30
+                ErrorAction = 'Stop'
+            }
+            $response = Invoke-RestMethodWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds 2
 
             if ($response -and $response.Count -gt 0) {
                 foreach ($paste in $response) {

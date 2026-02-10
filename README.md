@@ -195,9 +195,8 @@ Look4Gold13/
 ├── Look4Gold13.ps1              # Main script (copy this)
 ├── keywords.txt                 # Your keywords (gitignored)
 ├── Output/                      # HTML reports (gitignored)
-├── config/
-│   ├── au13-config.example.json # Config template (copy to au13-config.json)
-│   ├── au13-config.json         # Your config (gitignored)
-│   └── keywords.example.txt    # Starter keywords with common phrases
-└── src/                         # Original module files (reference)
+└── config/
+    ├── au13-config.example.json # Config template (copy to au13-config.json)
+    ├── au13-config.json         # Your config (gitignored)
+    └── keywords.example.txt    # Starter keywords with common phrases
 ```
