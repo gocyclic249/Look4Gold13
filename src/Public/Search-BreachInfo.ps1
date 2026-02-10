@@ -29,14 +29,22 @@ function Search-BreachInfo {
         'haveibeenpwned.com',
         'krebsonsecurity.com',
         'bleepingcomputer.com',
-        'threatpost.com',
         'securityweek.com',
         'therecord.media',
         'databreaches.net',
         'breachdirectory.org',
         'cybernews.com',
         'hackread.com',
-        'securityaffairs.com'
+        'securityaffairs.com',
+        'darkreading.com',
+        'thehackernews.com',
+        'schneier.com',
+        'grahamcluley.com',
+        'csoonline.com',
+        'infosecurity-magazine.com',
+        'arstechnica.com',
+        'reddit.com/r/netsec',
+        'reddit.com/r/cybersecurity'
     )
 
     foreach ($keyword in $Keywords) {
