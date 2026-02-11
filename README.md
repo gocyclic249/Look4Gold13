@@ -36,8 +36,9 @@ Copy-Item config/keywords.example.txt keywords.txt
 ## Requirements
 
 - PowerShell 7.0+
-- Ask Sage GenAI API token (optional, for AI summaries)
-  - Get one from Ask Sage: Settings > Account > Manage API Keys
+- GenAI API token (optional, for AI summaries) — supports either:
+  - **Ask Sage** (army.mil) — Settings > Account > Manage API Keys
+  - **Grok** (xAI) — [xAI API Console](https://console.x.ai/)
 
 ## Usage
 
@@ -113,6 +114,14 @@ In **interactive mode** (without `-UseProxy`), the script will ask if you're on 
 
 The proxy base URL defaults to `https://safe.menlosecurity.com` and can be changed via the `search.webProxyBase` config setting if your organization uses a different proxy.
 
+## DuckDuckGo Rate Limiting & VPN Tip
+
+DuckDuckGo may rate-limit or CAPTCHA-block requests depending on your source IP. Some ISPs (e.g., Starlink) are more aggressively rate-limited than others. If you're seeing frequent `[CAPTCHA]` or `[Error]` messages:
+
+- **Use a VPN** — routing through a VPN like ProtonVPN typically avoids rate limiting
+- **Use the Menlo proxy** (`-UseProxy`) — works well on government computers and also avoids direct IP-based rate limits
+- **Increase the delay** — set `search.delaySeconds` to `5` or higher in your config file
+
 ## Sources Scanned
 
 | Source | Method | Auth Required |
@@ -131,28 +140,57 @@ haveibeenpwned.com, krebsonsecurity.com, bleepingcomputer.com, securityweek.com,
 
 ## GenAI Summarization
 
-When a GenAI API token is configured, the scanner sends results **per keyword** to [Ask Sage](https://api.genai.army.mil) for AI-powered analysis. Each keyword section in the HTML report will include:
+When a GenAI API token is configured, the scanner sends results **per keyword** to an AI provider for analysis. The script supports two API backends:
+
+| Provider | Config `apiType` | Endpoint | Auth Header |
+|---|---|---|---|
+| **Ask Sage** (default) | *(omit or leave blank)* | `https://api.genai.army.mil/server/query` | `x-access-tokens` |
+| **Grok / OpenAI-compatible** | `"openai-compatible"` | `https://api.x.ai/v1/chat/completions` | `Authorization: Bearer` |
+
+Each keyword section in the HTML report will include:
 
 - Risk assessment
 - Key findings summary
 - Recommended actions
+- Additional sources found by AI
 
 The AI summary appears in a blue callout box below each keyword's results in the report.
 
 Without a token, the scanner runs normally but skips AI summaries.
 
+### Choosing a Provider
+
+Copy the matching example config:
+
+```powershell
+# For Ask Sage (army.mil)
+Copy-Item config/au13-config.example.asksage.json config/au13-config.json
+
+# For Grok (xAI)
+Copy-Item config/au13-config.example.grok.json config/au13-config.json
+```
+
+The key difference is the `apiType` field — set it to `"openai-compatible"` for Grok (or any OpenAI-compatible API), or omit it entirely for Ask Sage.
+
 ### Getting an API Key
 
+**Ask Sage:**
 1. Navigate to [Ask Sage](https://api.genai.army.mil)
 2. Go to **Settings** > **Account** tab
 3. Scroll to **Manage your API Keys** in the sidebar
 4. Generate a new API key
 
-> **Security:** Treat your API key like a password and rotate it regularly. See the full [Ask Sage API Documentation](https://api.genai.army.mil/documentation/docs/api-documentation/api-documentation.html) for details.
+> See the full [Ask Sage API Documentation](https://api.genai.army.mil/documentation/docs/api-documentation/api-documentation.html) for details.
+
+**Grok (xAI):**
+1. Navigate to the [xAI API Console](https://console.x.ai/)
+2. Create an API key
+
+> **Security:** Treat your API key like a password and rotate it regularly.
 
 ### Setting the Environment Variable
 
-Set the token as a persistent Windows user environment variable so the script picks it up automatically:
+Set the token as a persistent Windows user environment variable so the script picks it up automatically (works for both providers):
 
 ```powershell
 [System.Environment]::SetEnvironmentVariable("GENAI_API_TOKEN", "your-key", "User")
@@ -185,11 +223,14 @@ The script looks for the config file at `config/au13-config.json` by default. To
 
 ### Creating a Config File
 
-Copy the example to get started:
+Copy the example matching your GenAI provider:
 
 ```powershell
-Copy-Item config/au13-config.example.json config/au13-config.json
-# Edit config/au13-config.json — only include settings you want to change
+# For Ask Sage
+Copy-Item config/au13-config.example.asksage.json config/au13-config.json
+
+# For Grok
+Copy-Item config/au13-config.example.grok.json config/au13-config.json
 ```
 
 You don't need to include every setting. For example, to only change the delay:
@@ -204,12 +245,14 @@ You don't need to include every setting. For example, to only change the delay:
 
 ### All Config Options
 
+**Ask Sage example:**
+
 ```json
 {
     "genai": {
         "endpoint": "https://api.genai.army.mil/server/query",
         "tokenEnvVar": "GENAI_API_TOKEN",
-        "model": "google-claude-45-sonnet",
+        "model": "google-gemini-2.5-pro",
         "persona": 5,
         "temperature": 0.7,
         "limit_references": 5,
@@ -217,24 +260,44 @@ You don't need to include every setting. For example, to only change the delay:
     },
     "search": {
         "daysBack": 30,
-        "delaySeconds": 3,
+        "delaySeconds": 5,
         "sources": ["DuckDuckGo", "Paste", "Breach"],
         "webProxyBase": "https://safe.menlosecurity.com"
     }
 }
 ```
 
+**Grok (OpenAI-compatible) example:**
+
+```json
+{
+    "genai": {
+        "endpoint": "https://api.x.ai/v1/chat/completions",
+        "tokenEnvVar": "GENAI_API_TOKEN",
+        "model": "grok-3",
+        "temperature": 0.7,
+        "apiType": "openai-compatible"
+    },
+    "search": {
+        "daysBack": 30,
+        "delaySeconds": 5,
+        "sources": ["DuckDuckGo", "Paste", "Breach"]
+    }
+}
+```
+
 | Setting | Default | Description |
 |---|---|---|
-| `genai.endpoint` | `https://api.genai.army.mil/server/query` | Ask Sage API endpoint |
+| `genai.endpoint` | `https://api.genai.army.mil/server/query` | API endpoint URL |
 | `genai.tokenEnvVar` | `GENAI_API_TOKEN` | Environment variable name holding the API key |
-| `genai.model` | `google-claude-45-sonnet` | Model to use for summarization |
-| `genai.persona` | `5` | Ask Sage persona ID |
+| `genai.model` | `google-gemini-2.5-pro` | Model to use for summarization |
+| `genai.apiType` | *(blank = Ask Sage)* | Set to `"openai-compatible"` for Grok/OpenAI-style APIs |
+| `genai.persona` | `5` | Ask Sage persona ID (Ask Sage only) |
 | `genai.temperature` | `0.7` | Response creativity (0.0 = deterministic, 1.0 = creative) |
-| `genai.limit_references` | `5` | Max references returned by AI |
-| `genai.live` | `1` | Enable web search in AI responses (1 = on, 0 = off) |
+| `genai.limit_references` | `5` | Max references returned by AI (Ask Sage only) |
+| `genai.live` | `1` | Enable web search in AI responses (Ask Sage only, 1 = on, 0 = off) |
 | `search.daysBack` | `30` | Default days back for searches |
-| `search.delaySeconds` | `3` | Delay between DuckDuckGo requests (3+ recommended to avoid CAPTCHA) |
+| `search.delaySeconds` | `5` | Delay between DuckDuckGo requests (5+ recommended to avoid CAPTCHA) |
 | `search.sources` | `["DuckDuckGo", "Paste", "Breach"]` | Default sources to scan |
 | `search.webProxyBase` | `https://safe.menlosecurity.com` | Web isolation proxy base URL (used with `-UseProxy`) |
 
@@ -265,11 +328,12 @@ Copy-Item config/keywords.example.txt keywords.txt
 
 ```
 Look4Gold13/
-├── Look4Gold13.ps1              # Main script (copy this)
-├── keywords.txt                 # Your keywords (gitignored)
-├── Output/                      # HTML reports (gitignored)
+├── Look4Gold13.ps1                       # Main script (copy this)
+├── keywords.txt                          # Your keywords (gitignored)
+├── Output/                               # HTML reports (gitignored)
 └── config/
-    ├── au13-config.example.json # Config template (copy to au13-config.json)
-    ├── au13-config.json         # Your config (gitignored)
-    └── keywords.example.txt    # Starter keywords with common phrases
+    ├── au13-config.example.asksage.json  # Ask Sage config template
+    ├── au13-config.example.grok.json     # Grok (xAI) config template
+    ├── au13-config.json                  # Your config (gitignored)
+    └── keywords.example.txt             # Starter keywords with common phrases
 ```

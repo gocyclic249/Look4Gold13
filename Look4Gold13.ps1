@@ -563,8 +563,11 @@ function Search-BreachInfo {
                             $seenUrls[$urlKey] = $true
                             $newCount++
 
+                            # Extract domain name for source label
+                            $sourceName = try { ([System.Uri]$resultUrl).Host -replace '^www\.' } catch { 'Breach' }
+
                             $results += New-AU13Result `
-                                -Source "BreachBlog" `
+                                -Source $sourceName `
                                 -Keyword $keyword `
                                 -Title $resultTitle `
                                 -Url $resultUrl `
@@ -616,9 +619,19 @@ function Invoke-GenAISummary {
         }
     }
 
-    $headers = @{
-        'x-access-tokens' = $token
-        'Content-Type'    = 'application/json'
+    $isOpenAI = $GenAIConfig.apiType -eq 'openai-compatible'
+
+    # Set auth headers based on API type (Content-Type must be set via
+    # -ContentType param, not headers — PowerShell silently ignores it in headers)
+    if ($isOpenAI) {
+        $headers = @{
+            'Authorization' = "Bearer $token"
+        }
+    }
+    else {
+        $headers = @{
+            'x-access-tokens' = $token
+        }
     }
 
     # Build different prompts depending on whether we have scan results
@@ -671,39 +684,68 @@ If none, state "No additional sources identified."
 "@
     }
 
-    $body = @{
-        message          = $prompt
-        persona          = $GenAIConfig.persona
-        model            = $GenAIConfig.model
-        temperature      = $GenAIConfig.temperature
-        limit_references = $GenAIConfig.limit_references
-        live             = $GenAIConfig.live
-    } | ConvertTo-Json -Depth 3
+    # Build request body based on API type
+    if ($isOpenAI) {
+        # OpenAI-compatible format (Grok, OpenAI, etc.)
+        $body = @{
+            model       = $GenAIConfig.model
+            messages    = @(
+                @{ role = 'system'; content = 'You are an AU-13 compliance analyst specializing in NIST SP 800-53 AU-13.' }
+                @{ role = 'user';   content = $prompt }
+            )
+            temperature = $GenAIConfig.temperature
+        } | ConvertTo-Json -Depth 4
+    }
+    else {
+        # Ask Sage format
+        $body = @{
+            message          = $prompt
+            persona          = $GenAIConfig.persona
+            model            = $GenAIConfig.model
+            temperature      = $GenAIConfig.temperature
+            limit_references = $GenAIConfig.limit_references
+            live             = $GenAIConfig.live
+        } | ConvertTo-Json -Depth 3
+    }
 
     try {
         $action = if ($Results -and $Results.Count -gt 0) { "Summarizing" } else { "Searching for" }
-        Write-Host "[GenAI] $action '$Keyword'..." -ForegroundColor Cyan
+        $apiLabel = if ($isOpenAI) { $GenAIConfig.model } else { "Ask Sage" }
+        Write-Host "[GenAI] $action '$Keyword' via $apiLabel..." -ForegroundColor Cyan
         $response = Invoke-RestMethodWithRetry -RequestParams @{
             Uri         = $GenAIConfig.endpoint
             Method      = 'Post'
             Headers     = $headers
-            Body        = $body
+            Body        = [System.Text.Encoding]::UTF8.GetBytes($body)
+            ContentType = 'application/json; charset=utf-8'
             TimeoutSec  = 300
             ErrorAction = 'Stop'
         } -MaxRetries 2 -BaseDelaySeconds 3
 
         Start-Sleep -Seconds 3
 
-        # Capture both message and references from API response
+        # Parse response based on API type
         $refs = @()
-        if ($response.references) {
-            $refs = @($response.references)
-            Write-Host "[GenAI] Received $($refs.Count) reference(s) for '$Keyword'" -ForegroundColor Gray
+        $messageText = $null
+
+        if ($isOpenAI) {
+            # OpenAI-compatible: response.choices[0].message.content
+            if ($response.choices -and $response.choices.Count -gt 0) {
+                $messageText = $response.choices[0].message.content
+            }
+        }
+        else {
+            # Ask Sage: response.message, response.references
+            $messageText = $response.message
+            if ($response.references) {
+                $refs = @($response.references)
+                Write-Host "[GenAI] Received $($refs.Count) reference(s) for '$Keyword'" -ForegroundColor Gray
+            }
         }
 
-        if ($response.message) {
+        if ($messageText) {
             return @{
-                Message    = $response.message
+                Message    = $messageText
                 References = $refs
             }
         }
@@ -1085,7 +1127,11 @@ Write-Host "  Keywords:  $($keywords.Count) loaded" -ForegroundColor Gray
 Write-Host "  Days Back: $DaysBack" -ForegroundColor Gray
 Write-Host "  Sources:   $($Sources -join ', ')" -ForegroundColor Gray
 Write-Host "  Proxy:     $(if ($proxyBase) { $proxyBase } else { 'Direct (no proxy)' })" -ForegroundColor Gray
-Write-Host "  GenAI:     $(if ([System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)) { 'Enabled' } else { 'Disabled (no token)' })" -ForegroundColor Gray
+$genaiStatus = if ([System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)) {
+    $apiName = if ($config.genai.apiType -eq 'openai-compatible') { "$($config.genai.model)" } else { "Ask Sage ($($config.genai.model))" }
+    "Enabled - $apiName"
+} else { 'Disabled (no token)' }
+Write-Host "  GenAI:     $genaiStatus" -ForegroundColor Gray
 Write-Host ""
 
 $allResults = @()

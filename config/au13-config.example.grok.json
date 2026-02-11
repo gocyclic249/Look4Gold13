@@ -1,14 +1,13 @@
 {
     "genai": {
         "endpoint": "https://api.x.ai/v1/chat/completions",
-        "tokenEnvVar": "XAI_API_KEY",
+        "tokenEnvVar": "GENAI_API_TOKEN",
         "model": "grok-3",
         "persona": 5,
         "temperature": 0.7,
         "limit_references": 5,
         "live": 1,
         "apiType": "openai-compatible"
-
     },
     "search": {
         "daysBack": 30,
