@@ -6,7 +6,7 @@
     Scans multiple sources for unauthorized disclosure of organizational
     information per NIST SP 800-53 AU-13.
 
-    Sources: DuckDuckGo, Paste Sites, Breach/Security Blogs
+    Sources: DuckDuckGo (including paste sites), Breach/Security Blogs
 
     After scanning, sends results per keyword to a GenAI API (Ask Sage)
     for summarization. The AI summary is embedded in the HTML report.
@@ -41,7 +41,7 @@ param(
 
     [string]$ConfigFile,
 
-    [ValidateSet('DuckDuckGo', 'Paste', 'Breach')]
+    [ValidateSet('DuckDuckGo', 'Breach')]
     [string[]]$Sources,
 
     [switch]$UseProxy
@@ -303,7 +303,7 @@ function Import-AU13Config {
         search = @{
             daysBack     = 30
             delaySeconds = 5
-            sources      = @('DuckDuckGo', 'Paste', 'Breach')
+            sources      = @('DuckDuckGo', 'Breach')
             webProxyBase = 'https://safe.menlosecurity.com'
         }
     }
@@ -359,6 +359,16 @@ function Import-AU13Sources {
             @{ Label = 'Dropbox (public)'; Dork = 'site:dropbox.com/s/' },
             @{ Label = 'Google Docs';      Dork = 'site:docs.google.com' },
             @{ Label = 'Archive.org';      Dork = 'site:archive.org' },
+            @{ Label = 'Paste.ee';         Dork = 'site:paste.ee' },
+            @{ Label = 'Ghostbin';         Dork = 'site:ghostbin.com' },
+            @{ Label = 'Dpaste';           Dork = 'site:dpaste.org' },
+            @{ Label = 'Rentry';           Dork = 'site:rentry.co' },
+            @{ Label = 'JustPaste.it';     Dork = 'site:justpaste.it' },
+            @{ Label = 'ControlC';         Dork = 'site:controlc.com' },
+            @{ Label = 'PrivateBin';       Dork = 'site:privatebin.net' },
+            @{ Label = '0bin';             Dork = 'site:0bin.net' },
+            @{ Label = 'Hastebin';         Dork = 'site:hastebin.com' },
+            @{ Label = 'Ideone';           Dork = 'site:ideone.com' },
             @{ Label = 'PDF files';        Dork = 'filetype:pdf' },
             @{ Label = 'Excel files';      Dork = 'filetype:xlsx' },
             @{ Label = 'Word docs';        Dork = 'filetype:doc' },
@@ -373,20 +383,6 @@ function Import-AU13Sources {
             @{ Label = 'BleepingComputer';    Dork = 'site:bleepingcomputer.com' },
             @{ Label = 'KrebsOnSecurity';     Dork = 'site:krebsonsecurity.com' },
             @{ Label = 'BreachForums (agg)';  Dork = 'breachforums breach leaked database' }
-        )
-        pasteSites = @(
-            @{ Name = 'Pastebin';     Domain = 'pastebin.com' },
-            @{ Name = 'Paste.ee';     Domain = 'paste.ee' },
-            @{ Name = 'Ghostbin';     Domain = 'ghostbin.com' },
-            @{ Name = 'Dpaste';       Domain = 'dpaste.org' },
-            @{ Name = 'Rentry';       Domain = 'rentry.co' },
-            @{ Name = 'JustPaste.it'; Domain = 'justpaste.it' },
-            @{ Name = 'ControlC';     Domain = 'controlc.com' },
-            @{ Name = 'PrivateBin';   Domain = 'privatebin.net' },
-            @{ Name = '0bin';         Domain = '0bin.net' },
-            @{ Name = 'Hastebin';     Domain = 'hastebin.com' },
-            @{ Name = 'Ideone';       Domain = 'ideone.com' },
-            @{ Name = 'GitHub Gist';  Domain = 'gist.github.com' }
         )
     }
 
@@ -405,12 +401,6 @@ function Import-AU13Sources {
             if ($fileConfig.breachDorks -and $fileConfig.breachDorks.Count -gt 0) {
                 $defaults.breachDorks = @($fileConfig.breachDorks | ForEach-Object {
                     @{ Label = $_.label; Dork = $_.dork }
-                })
-            }
-
-            if ($fileConfig.pasteSites -and $fileConfig.pasteSites.Count -gt 0) {
-                $defaults.pasteSites = @($fileConfig.pasteSites | ForEach-Object {
-                    @{ Name = $_.name; Domain = $_.domain }
                 })
             }
 
@@ -594,39 +584,6 @@ function Search-DuckDuckGo {
     }
 
     Write-Host "[DuckDuckGo] Found $($results.Count) unique results" -ForegroundColor Cyan
-    return $results
-}
-
-function Search-PasteSites {
-    param(
-        [Parameter(Mandatory)]
-        [string[]]$Keywords,
-
-        [int]$DaysBack = 30,
-
-        [string]$ProxyBase = '',
-
-        [array]$PasteSitesDef = @()
-    )
-
-    $results = @()
-
-    foreach ($keyword in $Keywords) {
-        $ddgBase = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/" -ProxyBase $ProxyBase
-        $pasteSites = @($PasteSitesDef | ForEach-Object {
-            @{
-                Name = $_.Name
-                Url  = "${ddgBase}?q=site:$($_.Domain)+%22$([System.Uri]::EscapeDataString($keyword))%22"
-            }
-        })
-
-        Write-Host "[PasteSites] Manual search URLs for '$keyword':" -ForegroundColor Gray
-        foreach ($site in $pasteSites) {
-            Write-Host "  $($site.Name): $($site.Url)" -ForegroundColor DarkGray
-        }
-    }
-
-    Write-Host "[PasteSites] Manual links printed above (paste sites also covered by DuckDuckGo scan)" -ForegroundColor Cyan
     return $results
 }
 
@@ -1337,7 +1294,7 @@ else {
     }
 
     if (-not $Sources) {
-        Write-Host "Available sources: DuckDuckGo, Paste, Breach" -ForegroundColor Gray
+        Write-Host "Available sources: DuckDuckGo, Breach" -ForegroundColor Gray
         $userInput = Read-Host "Sources to scan (comma-separated) [All]"
         $Sources = if ($userInput) {
             $userInput -split ',' | ForEach-Object { $_.Trim() }
@@ -1386,14 +1343,6 @@ if ('DuckDuckGo' -in $Sources) {
     Write-Host "=== Scanning DuckDuckGo... ===" -ForegroundColor White
     $ddgResults = Search-DuckDuckGo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState) -Dorks $sourcesConfig.ddgDorks
     $allResults += $ddgResults
-    Write-Host ""
-}
-
-# --- Paste Sites ---
-if ('Paste' -in $Sources) {
-    Write-Host "=== Scanning Paste Sites... ===" -ForegroundColor White
-    $pasteResults = Search-PasteSites -Keywords $keywords -DaysBack $DaysBack -ProxyBase $proxyBase -PasteSitesDef $sourcesConfig.pasteSites
-    $allResults += $pasteResults
     Write-Host ""
 }
 
@@ -1497,15 +1446,3 @@ else {
 # Export HTML
 Export-AU13Html -Results $allResults -OutputPath $OutputFile -Keywords $keywords -DaysBack $DaysBack -Sources $Sources -AISummaries $aiSummaries | Out-Null
 
-# Display high-severity hits in console
-$highSev = $allResults | Where-Object { $_.Severity -in @('Critical', 'High') }
-if ($highSev) {
-    Write-Host ""
-    Write-Host "!! HIGH SEVERITY FINDINGS !!" -ForegroundColor Red
-    foreach ($finding in $highSev) {
-        Write-Host "  [$($finding.Source)] $($finding.Keyword): $($finding.Title)" -ForegroundColor Red
-        if ($finding.Url) {
-            Write-Host "    URL: $($finding.Url)" -ForegroundColor DarkRed
-        }
-    }
-}

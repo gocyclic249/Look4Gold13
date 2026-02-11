@@ -48,8 +48,8 @@ API Key Sources:
 
 SEARCH SOURCES FILE (sources.json)
 ------------------------------------
-The sources file defines the search dorks and paste site domains used by
-the scanner. The default file ships with the repo and works out of the box.
+The sources file defines the search dorks used by the scanner. The default
+file ships with the repo and works out of the box.
 
 To customize:
   1. Edit config/sources.json directly. Use sources.example.json as a
@@ -63,9 +63,8 @@ To customize:
      patterns. Your changes will be tracked by git.
 
 Sections:
-  ddgDorks      DuckDuckGo search dorks (label + dork query string)
+  ddgDorks      DuckDuckGo search dorks including paste sites (label + dork query string)
   breachDorks   Breach/security news dorks (label + dork query string)
-  pasteSites    Paste site definitions (name + domain; URL built at runtime)
 
 Example - adding a custom DDG dork:
   Copy the full ddgDorks array from sources.example.json, then append:
@@ -85,7 +84,7 @@ genai.live            Enable AI web search (Ask Sage only, default: 1)
 
 search.daysBack       Days back to search (default: 30)
 search.delaySeconds   Delay between DDG requests in seconds (default: 5)
-search.sources        Sources to scan: DuckDuckGo, Paste, Breach (default: all three)
+search.sources        Sources to scan: DuckDuckGo, Breach (default: both)
 search.webProxyBase   Menlo Security proxy URL (default: https://safe.menlosecurity.com)
 
 You don't need to include every setting. Only add the ones you want to

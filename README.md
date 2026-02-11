@@ -129,8 +129,7 @@ DuckDuckGo may rate-limit or CAPTCHA-block requests depending on your source IP.
 
 | Source | Method | Auth Required |
 |---|---|---|
-| **DuckDuckGo** | HTML lite endpoint with `site:`, `filetype:`, and contextual dork queries (12 queries/keyword) including social media, file sharing, and archive sites — with CAPTCHA detection and retry | No |
-| **Paste Sites** | Manual DuckDuckGo search links for 12 paste sites (Pastebin, Paste.ee, Ghostbin, Dpaste, Rentry, JustPaste.it, ControlC, PrivateBin, 0bin, Hastebin, Ideone, GitHub Gist) | No |
+| **DuckDuckGo** | HTML lite endpoint with `site:`, `filetype:`, and contextual dork queries (22 queries/keyword) covering code repos, paste sites, social media, file sharing, and archive sites — with CAPTCHA detection and retry | No |
 | **Breach Info** | DuckDuckGo searches across security/breach sites in 8 query groups — only results with actual hits are included | No |
 
 ### Sites & Platforms Monitored
@@ -139,9 +138,9 @@ DuckDuckGo may rate-limit or CAPTCHA-block requests depending on your source IP.
 
 **Social Media & Code** (via DuckDuckGo dorks): reddit.com, github.com, gist.github.com
 
-**File Sharing & Archives** (via DuckDuckGo dorks): dropbox.com (public links), docs.google.com, archive.org
+**Paste Sites** (via DuckDuckGo dorks): pastebin.com, paste.ee, ghostbin.com, dpaste.org, rentry.co, justpaste.it, controlc.com, privatebin.net, 0bin.net, hastebin.com, ideone.com
 
-**Paste Sites** (manual search links): pastebin.com, paste.ee, ghostbin.com, dpaste.org, rentry.co, justpaste.it, controlc.com, privatebin.net, 0bin.net, hastebin.com, ideone.com, gist.github.com
+**File Sharing & Archives** (via DuckDuckGo dorks): dropbox.com (public links), docs.google.com, archive.org
 
 > **Note:** All searches are routed through DuckDuckGo's HTML lite endpoint — no direct API access or authentication is needed for any of these sites.
 >
