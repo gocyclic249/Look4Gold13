@@ -6,6 +6,7 @@
 *.log
 /Output/
 /Reports/
+ddg_debug.html
 
 # Environment and secrets
 .env

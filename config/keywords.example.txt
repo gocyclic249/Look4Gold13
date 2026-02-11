@@ -1,9 +1,9 @@
 # AU-13 Keywords Example File
 # ================================================
-# Copy this file to the project root as 'keywords.txt'
+# Copy this file to 'config/keywords.txt'
 # and add your organization-specific keywords.
 #
-# IMPORTANT: The real keywords.txt is gitignored
+# IMPORTANT: The real config/keywords.txt is gitignored
 # to prevent accidental disclosure.
 #
 # Format: One keyword or phrase per line

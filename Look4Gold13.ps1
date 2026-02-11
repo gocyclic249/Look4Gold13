@@ -73,8 +73,7 @@ function Invoke-WebRequestWithRetry {
             $isRetryable = $_.Exception.Message -match 'connection was closed' -or
                            $_.Exception.Message -match 'Unable to connect' -or
                            $_.Exception.Message -match 'timed out' -or
-                           $_.Exception.Message -match '429' -or
-                           $_.Exception.Message -match '503'
+                           $_.Exception.Message -match '(403|429|503)'
 
             if ($isRetryable -and $attempt -le $MaxRetries) {
                 $delay = $BaseDelaySeconds * [math]::Pow(2, $attempt - 1)
@@ -103,8 +102,7 @@ function Invoke-RestMethodWithRetry {
             $isRetryable = $_.Exception.Message -match 'connection was closed' -or
                            $_.Exception.Message -match 'Unable to connect' -or
                            $_.Exception.Message -match 'timed out' -or
-                           $_.Exception.Message -match '429' -or
-                           $_.Exception.Message -match '503'
+                           $_.Exception.Message -match '(403|429|503)'
 
             if ($isRetryable -and $attempt -le $MaxRetries) {
                 $delay = $BaseDelaySeconds * [math]::Pow(2, $attempt - 1)
@@ -159,11 +157,11 @@ function Import-AU13Keywords {
     )
 
     if (-not $Path) {
-        $Path = Join-Path $PSScriptRoot "keywords.txt"
+        $Path = Join-Path $PSScriptRoot "config/keywords.txt"
     }
 
     if (-not (Test-Path $Path)) {
-        Write-Error "Keywords file not found at '$Path'. Copy config/keywords.example.txt to '$Path' and add your keywords."
+        Write-Error "Keywords file not found at '$Path'. Copy config/keywords.example.txt to config/keywords.txt and add your keywords."
         return @()
     }
 
@@ -1081,11 +1079,11 @@ elseif (-not $Silent) {
 if ($Silent) {
     if (-not $DaysBack)    { $DaysBack = $config.search.daysBack }
     if (-not $Sources)     { $Sources = $config.search.sources }
-    if (-not $KeywordFile) { $KeywordFile = Join-Path $PSScriptRoot "keywords.txt" }
+    if (-not $KeywordFile) { $KeywordFile = Join-Path $PSScriptRoot "config/keywords.txt" }
 }
 else {
     if (-not $KeywordFile) {
-        $defaultKw = Join-Path $PSScriptRoot "keywords.txt"
+        $defaultKw = Join-Path $PSScriptRoot "config/keywords.txt"
         $userInput = Read-Host "Keywords file path [$defaultKw]"
         $KeywordFile = if ($userInput) { $userInput } else { $defaultKw }
     }
@@ -1117,8 +1115,8 @@ else {
 $keywords = Import-AU13Keywords -Path $KeywordFile
 
 if (-not $keywords -or $keywords.Count -eq 0) {
-    Write-Error "No keywords loaded. Create a keywords.txt file with your monitoring terms."
-    Write-Host "  Hint: Copy config/keywords.example.txt to keywords.txt and add your keywords." -ForegroundColor Yellow
+    Write-Error "No keywords loaded. Create a config/keywords.txt file with your monitoring terms."
+    Write-Host "  Hint: Copy config/keywords.example.txt to config/keywords.txt and add your keywords." -ForegroundColor Yellow
     exit 1
 }
 

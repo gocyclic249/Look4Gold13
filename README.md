@@ -2,7 +2,7 @@
 
 > **CLASSIFICATION: UNCLASSIFIED**
 >
-> This script and repository are unclassified. However, the **keywords you search for may be sensitive**. The `keywords.txt` file is gitignored to prevent accidental disclosure, but exercise care when choosing search terms — do not include classified or controlled information in your keywords. Once results are generated, the HTML report should be handled according to your organization's data handling policies.
+> This script and repository are unclassified. However, the **keywords you search for may be sensitive**. The `config/keywords.txt` file is gitignored to prevent accidental disclosure, but exercise care when choosing search terms — do not include classified or controlled information in your keywords. Once results are generated, the HTML report should be handled according to your organization's data handling policies.
 
 A PowerShell script for monitoring compliance with **NIST SP 800-53 AU-13 (Monitoring for Information Disclosure)**.
 
@@ -13,8 +13,8 @@ AU-13 requires organizations to monitor open-source information and publicly acc
 **1. Copy `Look4Gold13.ps1` and set up keywords:**
 
 ```powershell
-Copy-Item config/keywords.example.txt keywords.txt
-# Edit keywords.txt - add your organization-specific search terms
+Copy-Item config/keywords.example.txt config/keywords.txt
+# Edit config/keywords.txt - add your organization-specific search terms
 ```
 
 **2. (Optional) Set up GenAI token for AI-powered summaries:**
@@ -80,7 +80,7 @@ Use the `-Silent` flag with parameters for automated/scheduled runs:
 | Parameter | Default | Description |
 |---|---|---|
 | `-Silent` | off | Skip prompts, use flags/defaults |
-| `-KeywordFile` | `./keywords.txt` | Path to keywords file |
+| `-KeywordFile` | `./config/keywords.txt` | Path to keywords file |
 | `-DaysBack` | 30 | How many days back to search |
 | `-Sources` | All | Which sources: `DuckDuckGo`, `Paste`, `Breach` |
 | `-OutputFile` | Auto-generated | Path for HTML report |
@@ -121,6 +121,7 @@ DuckDuckGo may rate-limit or CAPTCHA-block requests depending on your source IP.
 - **Use a VPN** — routing through a VPN like ProtonVPN typically avoids rate limiting
 - **Use the Menlo proxy** (`-UseProxy`) — works well on government computers and also avoids direct IP-based rate limits
 - **Increase the delay** — set `search.delaySeconds` to `5` or higher in your config file
+- **Email addresses as keywords** — queries containing `@` (e.g., `user@domain.com`) trigger DDG's bot detection more aggressively, resulting in 403 errors. The script will automatically retry with exponential backoff, but expect slower scans when using email keywords. Using a VPN or the Menlo proxy helps.
 
 ## Sources Scanned
 
@@ -313,13 +314,13 @@ Reports are saved to `./Output/AU13_Scan_<timestamp>.html` by default.
 
 ## Keywords File
 
-The `keywords.txt` file contains your search terms (one per line). It is **gitignored** to prevent accidental disclosure of sensitive organizational terms.
+The `config/keywords.txt` file contains your search terms (one per line). It is **gitignored** to prevent accidental disclosure of sensitive organizational terms.
 
 A starter example with common test phrases is provided at `config/keywords.example.txt`.
 
 ```powershell
 # Copy the example to get started
-Copy-Item config/keywords.example.txt keywords.txt
+Copy-Item config/keywords.example.txt config/keywords.txt
 
 # Then add your own terms at the bottom
 ```
@@ -329,11 +330,12 @@ Copy-Item config/keywords.example.txt keywords.txt
 ```
 Look4Gold13/
 ├── Look4Gold13.ps1                       # Main script (copy this)
-├── keywords.txt                          # Your keywords (gitignored)
 ├── Output/                               # HTML reports (gitignored)
 └── config/
+    ├── README.txt                        # Configuration instructions
     ├── au13-config.example.asksage.json  # Ask Sage config template
     ├── au13-config.example.grok.json     # Grok (xAI) config template
     ├── au13-config.json                  # Your config (gitignored)
-    └── keywords.example.txt             # Starter keywords with common phrases
+    ├── keywords.example.txt              # Starter keywords with common phrases
+    └── keywords.txt                      # Your keywords (gitignored)
 ```
