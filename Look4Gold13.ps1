@@ -1,3 +1,4 @@
+
 <#
 .SYNOPSIS
     Look4Gold13 - AU-13 Compliance Scanner (Single-file edition)
@@ -60,8 +61,8 @@ param(
 function Invoke-WebRequestWithRetry {
     param(
         [Parameter(Mandatory)][hashtable]$RequestParams,
-        [int]$MaxRetries = 3,
-        [int]$BaseDelaySeconds = 2
+        [int]$MaxRetries = 5,
+        [int]$BaseDelaySeconds = 5
     )
 
     for ($attempt = 1; $attempt -le ($MaxRetries + 1); $attempt++) {
@@ -90,8 +91,8 @@ function Invoke-WebRequestWithRetry {
 function Invoke-RestMethodWithRetry {
     param(
         [Parameter(Mandatory)][hashtable]$RequestParams,
-        [int]$MaxRetries = 3,
-        [int]$BaseDelaySeconds = 2
+        [int]$MaxRetries = 5,
+        [int]$BaseDelaySeconds = 5
     )
 
     for ($attempt = 1; $attempt -le ($MaxRetries + 1); $attempt++) {
@@ -201,7 +202,7 @@ function Import-AU13Config {
         }
         search = @{
             daysBack     = 30
-            delaySeconds = 4
+            delaySeconds = 5
             sources      = @('DuckDuckGo', 'Paste', 'Breach')
             webProxyBase = 'https://safe.menlosecurity.com'
         }
@@ -249,7 +250,7 @@ function Search-DuckDuckGo {
 
         [int]$DaysBack = 30,
 
-        [int]$DelaySeconds = 4,
+        [int]$DelaySeconds = 5,
 
         [string]$ProxyBase = '',
 
@@ -263,16 +264,11 @@ function Search-DuckDuckGo {
     # Then targeted site: queries for high-priority sites that may not surface in broad search.
     # Finally filetype: queries for document exposure.
     $dorks = @(
-        # Broad: catches breach news, HIBP, security articles, etc.
         @{ Label = 'Breach/leak mentions'; Dork = 'breach data leak exposed' },
-        # Broad: paste site and credential exposure
         @{ Label = 'Paste/credential';     Dork = 'pastebin paste credential dump' },
-        # Broad: code and project exposure
         @{ Label = 'Code exposure';        Dork = 'github code exposed repository' },
-        # Targeted: high-priority sites that may not surface in broad search
         @{ Label = 'Pastebin';             Dork = 'site:pastebin.com' },
         @{ Label = 'GitHub';               Dork = 'site:github.com' },
-        # Document exposure
         @{ Label = 'PDF files';            Dork = 'filetype:pdf' },
         @{ Label = 'Excel files';          Dork = 'filetype:xlsx' },
         @{ Label = 'Word docs';            Dork = 'filetype:doc' },
@@ -304,10 +300,10 @@ function Search-DuckDuckGo {
                     TimeoutSec      = 15
                     ErrorAction     = 'Stop'
                     Headers         = @{
-                        'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
                     }
                 }
-                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $currentDelay
+                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 5 -BaseDelaySeconds $currentDelay
                 $html = $webResponse.Content
 
                 # Detect DDG CAPTCHA/bot block (HTTP 202 with "select all squares")
@@ -333,23 +329,45 @@ function Search-DuckDuckGo {
                     Write-Host "  [Query Too Long] $($dork.Label) - DDG rejected query length" -ForegroundColor DarkYellow
                 }
                 else {
-                    # Try multiple regex patterns to extract results — Menlo proxy
-                    # may rewrite CSS class names, so fall back to URL patterns.
-                    $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
+                    # Robust regex for class="result__a" with flexible attribute order
+                    $linkMatches = [regex]::Matches($html, '<a\b((?:[^>]*\bclass="result__a"[^>]*\bhref="([^"]+)"|[^>]*\bhref="([^"]+)"[^>]*\bclass="result__a")[^>]*)>([^<]+)<')
+
                     if ($linkMatches.Count -eq 0) {
-                        # Fallback: match DDG redirect links by uddg= parameter
+                        # Fallback 1: match DDG redirect links by uddg= parameter
                         $linkMatches = [regex]::Matches($html, 'href="([^"]*uddg=[^"]+)"[^>]*>([^<]+)<')
                     }
+
                     if ($linkMatches.Count -eq 0) {
-                        # Fallback: match any duckduckgo.com/l/ redirect links
+                        # Fallback 2: match any duckduckgo.com/l/ redirect links
                         $linkMatches = [regex]::Matches($html, 'href="([^"]*duckduckgo\.com/l/[^"]+)"[^>]*>([^<]+)<')
+                    }
+
+                    if ($linkMatches.Count -eq 0 -and $ProxyBase) {
+                        # Proxy-specific fallback: match links rewritten by proxy (classes may be prefixed, links start with proxy base)
+                        $linkMatches = [regex]::Matches($html, 'class="[^"]*result__a" href="([^"]+)"[^>]*>([^<]+)<')
+                        if ($linkMatches.Count -eq 0) {
+                            # Even broader: any href starting with proxy base + https://
+                            $linkMatches = [regex]::Matches($html, 'href="' + [regex]::Escape($ProxyBase) + '/https?://([^"]+)"[^>]*>([^<]+)<')
+                        }
                     }
 
                     if ($linkMatches.Count -gt 0) {
                         $newCount = 0
                         foreach ($match in $linkMatches) {
-                            $resultUrl = $match.Groups[1].Value
-                            $resultTitle = $match.Groups[2].Value.Trim()
+                            # Handle robust regex groups (href in group 2 or 3, title in 4)
+                            if ($match.Groups.Count -ge 5 -and $match.Groups[4].Value) {
+                                $resultUrl = if ($match.Groups[2].Value) { $match.Groups[2].Value } else { $match.Groups[3].Value }
+                                $resultTitle = $match.Groups[4].Value.Trim()
+                            } else {
+                                $resultUrl = $match.Groups[1].Value
+                                $resultTitle = $match.Groups[2].Value.Trim()
+                            }
+
+                            # For proxy, strip proxy base from URL
+                            if ($ProxyBase -and $resultUrl -match [regex]::Escape($ProxyBase + '/') + '(.*)') {
+                                $resultUrl = $Matches[1]
+                                if ($resultUrl -notmatch '^https?://') { $resultUrl = 'https://' + $resultUrl }
+                            }
 
                             # DDG wraps URLs in a redirect — extract the real URL
                             if ($resultUrl -match 'uddg=([^&]+)') {
@@ -374,6 +392,8 @@ function Search-DuckDuckGo {
                     }
                     else {
                         Write-Host "  [No Results] $($dork.Label)" -ForegroundColor DarkGray
+                        Write-Host "  [Debug] No matches found - saving HTML to ddg_debug.html for inspection" -ForegroundColor Yellow
+                        $html | Out-File -FilePath "ddg_debug.html" -Encoding UTF8
                     }
                 }
             }
@@ -431,7 +451,7 @@ function Search-BreachInfo {
 
         [int]$DaysBack = 30,
 
-        [int]$DelaySeconds = 4,
+        [int]$DelaySeconds = 5,
 
         [string]$ProxyBase = '',
 
@@ -443,13 +463,9 @@ function Search-BreachInfo {
 
     # Broad contextual queries first, then targeted high-priority breach sites.
     $breachDorks = @(
-        # Broad: general breach/leak news — catches HIBP, BleepingComputer, SecurityWeek, etc.
         @{ Label = 'Breach/leak news';    Dork = 'breach data leak compromised' },
-        # Broad: ransomware and attack news
         @{ Label = 'Ransomware/attacks';  Dork = 'ransomware attack security incident' },
-        # Broad: credential/dark web exposure
         @{ Label = 'Credential exposure'; Dork = 'credential stolen dark web' },
-        # Targeted: highest-priority breach sites that may not surface in broad search
         @{ Label = 'Have I Been Pwned';   Dork = 'site:haveibeenpwned.com' },
         @{ Label = 'DataBreaches.net';    Dork = 'site:databreaches.net' }
     )
@@ -479,10 +495,10 @@ function Search-BreachInfo {
                     TimeoutSec      = 15
                     ErrorAction     = 'Stop'
                     Headers         = @{
-                        'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                        'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
                     }
                 }
-                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $currentDelay
+                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 5 -BaseDelaySeconds $currentDelay
                 $html = $webResponse.Content
 
                 # Detect CAPTCHA
@@ -506,21 +522,47 @@ function Search-BreachInfo {
                     Write-Host "  [Query Too Long] $($dork.Label)" -ForegroundColor DarkYellow
                 }
                 else {
-                    # Try multiple regex patterns — Menlo proxy may rewrite CSS classes
-                    $linkMatches = [regex]::Matches($html, 'class="result__a" href="([^"]+)"[^>]*>([^<]+)<')
+                    # Robust regex for class="result__a" with flexible attribute order
+                    $linkMatches = [regex]::Matches($html, '<a\b((?:[^>]*\bclass="result__a"[^>]*\bhref="([^"]+)"|[^>]*\bhref="([^"]+)"[^>]*\bclass="result__a")[^>]*)>([^<]+)<')
+
                     if ($linkMatches.Count -eq 0) {
+                        # Fallback 1: match DDG redirect links by uddg= parameter
                         $linkMatches = [regex]::Matches($html, 'href="([^"]*uddg=[^"]+)"[^>]*>([^<]+)<')
                     }
+
                     if ($linkMatches.Count -eq 0) {
+                        # Fallback 2: match any duckduckgo.com/l/ redirect links
                         $linkMatches = [regex]::Matches($html, 'href="([^"]*duckduckgo\.com/l/[^"]+)"[^>]*>([^<]+)<')
+                    }
+
+                    if ($linkMatches.Count -eq 0 -and $ProxyBase) {
+                        # Proxy-specific fallback: match links rewritten by proxy (classes may be prefixed)
+                        $linkMatches = [regex]::Matches($html, 'class="[^"]*result__a" href="([^"]+)"[^>]*>([^<]+)<')
+                        if ($linkMatches.Count -eq 0) {
+                            # Broader: any href starting with proxy base + https://
+                            $linkMatches = [regex]::Matches($html, 'href="' + [regex]::Escape($ProxyBase) + '/https?://([^"]+)"[^>]*>([^<]+)<')
+                        }
                     }
 
                     if ($linkMatches.Count -gt 0) {
                         $newCount = 0
                         foreach ($match in $linkMatches) {
-                            $resultUrl = $match.Groups[1].Value
-                            $resultTitle = $match.Groups[2].Value.Trim()
+                            # Handle robust regex groups (href in group 2 or 3, title in 4)
+                            if ($match.Groups.Count -ge 5 -and $match.Groups[4].Value) {
+                                $resultUrl = if ($match.Groups[2].Value) { $match.Groups[2].Value } else { $match.Groups[3].Value }
+                                $resultTitle = $match.Groups[4].Value.Trim()
+                            } else {
+                                $resultUrl = $match.Groups[1].Value
+                                $resultTitle = $match.Groups[2].Value.Trim()
+                            }
 
+                            # For proxy, strip proxy base from URL
+                            if ($ProxyBase -and $resultUrl -match [regex]::Escape($ProxyBase + '/') + '(.*)') {
+                                $resultUrl = $Matches[1]
+                                if ($resultUrl -notmatch '^https?://') { $resultUrl = 'https://' + $resultUrl }
+                            }
+
+                            # DDG wraps URLs in a redirect — extract the real URL
                             if ($resultUrl -match 'uddg=([^&]+)') {
                                 $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
                             }
@@ -543,6 +585,8 @@ function Search-BreachInfo {
                     }
                     else {
                         Write-Host "  [No Results] $($dork.Label)" -ForegroundColor DarkGray
+                        Write-Host "  [Debug] No matches found - saving HTML to ddg_debug.html for inspection" -ForegroundColor Yellow
+                        $html | Out-File -FilePath "ddg_debug.html" -Encoding UTF8
                     }
                 }
             }
