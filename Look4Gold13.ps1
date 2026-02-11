@@ -67,6 +67,84 @@ function Get-EnvVar {
     return $null
 }
 
+function ConvertFrom-Markdown {
+    param([string]$Text)
+    if (-not $Text) { return '' }
+
+    $lines = $Text -split "`n"
+    $html = New-Object System.Text.StringBuilder
+    $inList = $false
+    $inCodeBlock = $false
+
+    foreach ($line in $lines) {
+        # Fenced code blocks
+        if ($line -match '^```') {
+            if ($inCodeBlock) {
+                [void]$html.Append('</code></pre>')
+                $inCodeBlock = $false
+            } else {
+                if ($inList) { [void]$html.Append('</ul>'); $inList = $false }
+                [void]$html.Append('<pre><code>')
+                $inCodeBlock = $true
+            }
+            continue
+        }
+        if ($inCodeBlock) {
+            [void]$html.AppendLine([System.Web.HttpUtility]::HtmlEncode($line))
+            continue
+        }
+
+        # Close list if current line is not a list item
+        if ($inList -and $line -notmatch '^\s*[-*]\s') {
+            [void]$html.Append('</ul>')
+            $inList = $false
+        }
+
+        # Blank lines
+        if ($line -match '^\s*$') { continue }
+
+        # Headers
+        if ($line -match '^####\s+(.+)') {
+            [void]$html.Append("<h6>$([System.Web.HttpUtility]::HtmlEncode($Matches[1]))</h6>")
+            continue
+        }
+        if ($line -match '^###\s+(.+)') {
+            [void]$html.Append("<h5>$([System.Web.HttpUtility]::HtmlEncode($Matches[1]))</h5>")
+            continue
+        }
+        if ($line -match '^##\s+(.+)') {
+            [void]$html.Append("<h4>$([System.Web.HttpUtility]::HtmlEncode($Matches[1]))</h4>")
+            continue
+        }
+        if ($line -match '^#\s+(.+)') {
+            [void]$html.Append("<h3>$([System.Web.HttpUtility]::HtmlEncode($Matches[1]))</h3>")
+            continue
+        }
+
+        # Unordered list items
+        if ($line -match '^\s*[-*]\s+(.+)') {
+            if (-not $inList) { [void]$html.Append('<ul>'); $inList = $true }
+            $itemText = $Matches[1]
+            $itemText = [System.Web.HttpUtility]::HtmlEncode($itemText)
+            $itemText = $itemText -replace '\*\*(.+?)\*\*', '<strong>$1</strong>'
+            $itemText = $itemText -replace '`(.+?)`', '<code>$1</code>'
+            [void]$html.Append("<li>$itemText</li>")
+            continue
+        }
+
+        # Regular paragraph — apply inline formatting
+        $escaped = [System.Web.HttpUtility]::HtmlEncode($line)
+        $escaped = $escaped -replace '\*\*(.+?)\*\*', '<strong>$1</strong>'
+        $escaped = $escaped -replace '`(.+?)`', '<code>$1</code>'
+        [void]$html.Append("<p>$escaped</p>")
+    }
+
+    if ($inList) { [void]$html.Append('</ul>') }
+    if ($inCodeBlock) { [void]$html.Append('</code></pre>') }
+
+    return $html.ToString()
+}
+
 function Invoke-WebRequestWithRetry {
     param(
         [Parameter(Mandatory)][hashtable]$RequestParams,
@@ -897,7 +975,7 @@ function Export-AU13Html {
             $aiData = $AISummaries[$kwName]
 
             if ($aiData -is [hashtable]) {
-                $aiText = [System.Web.HttpUtility]::HtmlEncode($aiData.Message) -replace "`n", "<br>"
+                $aiText = ConvertFrom-Markdown $aiData.Message
 
                 # Render AI references as clickable source links
                 $refsHtml = ""
@@ -945,7 +1023,7 @@ function Export-AU13Html {
             }
             else {
                 # Legacy: plain string format
-                $aiText = [System.Web.HttpUtility]::HtmlEncode($aiData) -replace "`n", "<br>"
+                $aiText = ConvertFrom-Markdown $aiData
                 $aiBlock = @"
             <div class="ai-summary">
                 <h3>AI Analysis</h3>
@@ -972,8 +1050,8 @@ $listItems
         $keywordBlocks += @"
         <div class="query-block">
             <h2>Query: &quot;$kw&quot;</h2>
-$resultSection
 $aiBlock
+$resultSection
         </div>
 
 "@
@@ -1005,7 +1083,16 @@ $aiBlock
         .query-block small { color: #777; }
         .ai-summary { background: #f0f4ff; border-left: 4px solid #4a6cf7; padding: 12px 16px; margin-top: 12px; border-radius: 0 4px 4px 0; }
         .ai-summary h3 { margin: 0 0 8px 0; color: #4a6cf7; font-size: 0.95em; }
-        .ai-content { font-size: 0.9em; line-height: 1.5; color: #444; }
+        .ai-content { font-size: 0.9em; line-height: 1.6; color: #444; }
+        .ai-content h3, .ai-content h4, .ai-content h5, .ai-content h6 { color: #1a1a2e; margin: 14px 0 6px 0; }
+        .ai-content h3 { font-size: 1.05em; } .ai-content h4 { font-size: 0.95em; } .ai-content h5 { font-size: 0.9em; } .ai-content h6 { font-size: 0.85em; }
+        .ai-content p { margin: 6px 0; }
+        .ai-content ul { padding-left: 22px; margin: 6px 0; }
+        .ai-content li { padding: 2px 0; }
+        .ai-content code { background: #e8ecf1; padding: 1px 5px; border-radius: 3px; font-size: 0.9em; }
+        .ai-content pre { background: #1e1e2e; color: #cdd6f4; padding: 12px 16px; border-radius: 4px; overflow-x: auto; margin: 8px 0; }
+        .ai-content pre code { background: none; padding: 0; color: inherit; }
+        .ai-content strong { color: #333; }
         .ai-summary h4 { margin: 12px 0 6px 0; color: #333; font-size: 0.9em; }
         .ai-refs { padding-left: 20px; margin: 4px 0; list-style: disc; }
         .ai-refs li { font-size: 0.85em; color: #555; padding: 2px 0; }
