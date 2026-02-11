@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git add:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix empty title errors in DDG/Breach searches, improve GenAI prompts\n\nSkip results with empty titles that cause ''Cannot bind argument to\nparameter Title'' errors in New-AU13Result. Also restructure GenAI\nprompts with clearer AU-13 context and markdown-formatted sections.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
-    ]
-  }
-}

@@ -1064,8 +1064,8 @@ if ($UseProxy) {
 }
 elseif (-not $Silent) {
     Write-Host "Government networks may require Menlo Security web isolation proxy." -ForegroundColor Yellow
-    $input = Read-Host "Are you on a government computer that uses Menlo Security? (y/N)"
-    if ($input -match '^[Yy]') {
+    $userInput = Read-Host "Are you on a government computer that uses Menlo Security? (y/N)"
+    if ($userInput -match '^[Yy]') {
         $proxyBase = $config.search.webProxyBase
         Write-Host ""
         Write-Host "  Before continuing, make sure you are logged into Menlo Security:" -ForegroundColor Cyan
@@ -1086,20 +1086,20 @@ if ($Silent) {
 else {
     if (-not $KeywordFile) {
         $defaultKw = Join-Path $PSScriptRoot "keywords.txt"
-        $input = Read-Host "Keywords file path [$defaultKw]"
-        $KeywordFile = if ($input) { $input } else { $defaultKw }
+        $userInput = Read-Host "Keywords file path [$defaultKw]"
+        $KeywordFile = if ($userInput) { $userInput } else { $defaultKw }
     }
 
     if (-not $DaysBack) {
-        $input = Read-Host "Days back to search [$($config.search.daysBack)]"
-        $DaysBack = if ($input) { [int]$input } else { $config.search.daysBack }
+        $userInput = Read-Host "Days back to search [$($config.search.daysBack)]"
+        $DaysBack = if ($userInput) { [int]$userInput } else { $config.search.daysBack }
     }
 
     if (-not $Sources) {
         Write-Host "Available sources: DuckDuckGo, Paste, Breach" -ForegroundColor Gray
-        $input = Read-Host "Sources to scan (comma-separated) [All]"
-        $Sources = if ($input) {
-            $input -split ',' | ForEach-Object { $_.Trim() }
+        $userInput = Read-Host "Sources to scan (comma-separated) [All]"
+        $Sources = if ($userInput) {
+            $userInput -split ',' | ForEach-Object { $_.Trim() }
         }
         else {
             $config.search.sources
@@ -1108,8 +1108,8 @@ else {
 
     if (-not $OutputFile) {
         $defaultOut = Join-Path (Join-Path $PSScriptRoot "Output") "AU13_Scan_$(Get-Date -Format 'yyyyMMdd_HHmmss').html"
-        $input = Read-Host "Output file path [$defaultOut]"
-        $OutputFile = if ($input) { $input } else { $defaultOut }
+        $userInput = Read-Host "Output file path [$defaultOut]"
+        $OutputFile = if ($userInput) { $userInput } else { $defaultOut }
     }
 }
 
@@ -1235,7 +1235,7 @@ else {
 }
 
 # Export HTML
-$reportPath = Export-AU13Html -Results $allResults -OutputPath $OutputFile -Keywords $keywords -DaysBack $DaysBack -Sources $Sources -AISummaries $aiSummaries
+Export-AU13Html -Results $allResults -OutputPath $OutputFile -Keywords $keywords -DaysBack $DaysBack -Sources $Sources -AISummaries $aiSummaries | Out-Null
 
 # Display high-severity hits in console
 $highSev = $allResults | Where-Object { $_.Severity -in @('Critical', 'High') }
