@@ -58,6 +58,15 @@ param(
 # HELPER FUNCTIONS
 # ============================================================================
 
+function Get-EnvVar {
+    param([string]$Name)
+    foreach ($scope in 'Process', 'User', 'Machine') {
+        $val = [System.Environment]::GetEnvironmentVariable($Name, $scope)
+        if ($val) { return $val }
+    }
+    return $null
+}
+
 function Invoke-WebRequestWithRetry {
     param(
         [Parameter(Mandatory)][hashtable]$RequestParams,
@@ -609,7 +618,7 @@ function Invoke-GenAISummary {
         [hashtable]$GenAIConfig
     )
 
-    $token = [System.Environment]::GetEnvironmentVariable($GenAIConfig.tokenEnvVar)
+    $token = Get-EnvVar $GenAIConfig.tokenEnvVar
     if (-not $token) {
         return @{
             Message    = "GenAI summary unavailable - $($GenAIConfig.tokenEnvVar) environment variable not set."
@@ -1040,7 +1049,7 @@ Write-Host $banner -ForegroundColor Yellow
 $config = Import-AU13Config -Path $ConfigFile
 
 # --- Resolve GenAI Token ---
-$genaiToken = [System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)
+$genaiToken = Get-EnvVar $config.genai.tokenEnvVar
 if (-not $genaiToken) {
     if ($Silent) {
         Write-Warning "GenAI token not found in `$env:$($config.genai.tokenEnvVar). AI summaries will be skipped."
@@ -1125,7 +1134,7 @@ Write-Host "  Keywords:  $($keywords.Count) loaded" -ForegroundColor Gray
 Write-Host "  Days Back: $DaysBack" -ForegroundColor Gray
 Write-Host "  Sources:   $($Sources -join ', ')" -ForegroundColor Gray
 Write-Host "  Proxy:     $(if ($proxyBase) { $proxyBase } else { 'Direct (no proxy)' })" -ForegroundColor Gray
-$genaiStatus = if ([System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)) {
+$genaiStatus = if (Get-EnvVar $config.genai.tokenEnvVar) {
     $apiName = if ($config.genai.apiType -eq 'openai-compatible') { "$($config.genai.model)" } else { "Ask Sage ($($config.genai.model))" }
     "Enabled - $apiName"
 } else { 'Disabled (no token)' }
@@ -1190,7 +1199,7 @@ Write-Host ""
 
 # --- GenAI Summarization (per keyword — runs for ALL keywords, even with 0 DDG results) ---
 $aiSummaries = @{}
-$genaiTokenCheck = [System.Environment]::GetEnvironmentVariable($config.genai.tokenEnvVar)
+$genaiTokenCheck = Get-EnvVar $config.genai.tokenEnvVar
 if ($genaiTokenCheck) {
     Write-Host "=== Running GenAI Analysis... ===" -ForegroundColor White
 

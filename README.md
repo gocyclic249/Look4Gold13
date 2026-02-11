@@ -1,5 +1,7 @@
 # Look4Gold13 - AU-13 Compliance Scanner
 
+> **ALPHA** — This script is in early alpha testing. Expect rough edges, breaking changes, and incomplete features. If you run into bugs or have ideas for improvements, please [open an issue](https://github.com/gocyclic249/Look4Gold13/issues) — feedback and recommendations are welcome!
+
 > **CLASSIFICATION: UNCLASSIFIED**
 >
 > This script and repository are unclassified. However, the **keywords you search for may be sensitive**. The `config/keywords.txt` file is gitignored to prevent accidental disclosure, but exercise care when choosing search terms — do not include classified or controlled information in your keywords. Once results are generated, the HTML report should be handled according to your organization's data handling policies.
