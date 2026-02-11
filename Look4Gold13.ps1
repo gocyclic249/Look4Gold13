@@ -276,6 +276,12 @@ function Search-DuckDuckGo {
         @{ Label = 'Code exposure';        Dork = 'github code exposed repository' },
         @{ Label = 'Pastebin';             Dork = 'site:pastebin.com' },
         @{ Label = 'GitHub';               Dork = 'site:github.com' },
+        @{ Label = 'GitHub Gist';          Dork = 'site:gist.github.com' },
+        @{ Label = 'Reddit';              Dork = 'site:reddit.com' },
+        @{ Label = 'Twitter/X';            Dork = 'site:x.com' },
+        @{ Label = 'Dropbox (public)';     Dork = 'site:dropbox.com/s/' },
+        @{ Label = 'Google Docs';          Dork = 'site:docs.google.com' },
+        @{ Label = 'Archive.org';          Dork = 'site:archive.org' },
         @{ Label = 'PDF files';            Dork = 'filetype:pdf' },
         @{ Label = 'Excel files';          Dork = 'filetype:xlsx' },
         @{ Label = 'Word docs';            Dork = 'filetype:doc' },
@@ -441,7 +447,11 @@ function Search-PasteSites {
             @{ Name = 'Rentry';       Url = "${ddgBase}?q=site:rentry.co+%22$([System.Uri]::EscapeDataString($keyword))%22" },
             @{ Name = 'JustPaste.it'; Url = "${ddgBase}?q=site:justpaste.it+%22$([System.Uri]::EscapeDataString($keyword))%22" },
             @{ Name = 'ControlC';     Url = "${ddgBase}?q=site:controlc.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'PrivateBin';   Url = "${ddgBase}?q=site:privatebin.net+%22$([System.Uri]::EscapeDataString($keyword))%22" }
+            @{ Name = 'PrivateBin';   Url = "${ddgBase}?q=site:privatebin.net+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = '0bin';         Url = "${ddgBase}?q=site:0bin.net+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Hastebin';     Url = "${ddgBase}?q=site:hastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'Ideone';       Url = "${ddgBase}?q=site:ideone.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
+            @{ Name = 'GitHub Gist';  Url = "${ddgBase}?q=site:gist.github.com+%22$([System.Uri]::EscapeDataString($keyword))%22" }
         )
 
         Write-Host "[PasteSites] Manual search URLs for '$keyword':" -ForegroundColor Gray
@@ -477,7 +487,10 @@ function Search-BreachInfo {
         @{ Label = 'Ransomware/attacks';  Dork = 'ransomware attack security incident' },
         @{ Label = 'Credential exposure'; Dork = 'credential stolen dark web' },
         @{ Label = 'Have I Been Pwned';   Dork = 'site:haveibeenpwned.com' },
-        @{ Label = 'DataBreaches.net';    Dork = 'site:databreaches.net' }
+        @{ Label = 'DataBreaches.net';    Dork = 'site:databreaches.net' },
+        @{ Label = 'BleepingComputer';    Dork = 'site:bleepingcomputer.com' },
+        @{ Label = 'KrebsOnSecurity';     Dork = 'site:krebsonsecurity.com' },
+        @{ Label = 'BreachForums (agg)';  Dork = 'breachforums breach leaked database' }
     )
 
     Write-Host "[BreachInfo] Searching $($breachDorks.Count) queries/keyword, ${DelaySeconds}s delay..." -ForegroundColor Cyan
