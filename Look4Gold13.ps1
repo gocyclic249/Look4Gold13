@@ -351,6 +351,9 @@ function Search-DuckDuckGo {
                             $resultUrl = $match.Groups[1].Value
                             $resultTitle = $match.Groups[2].Value.Trim()
 
+                            # Skip results with empty titles (mandatory param)
+                            if (-not $resultTitle) { continue }
+
                             # DDG wraps URLs in a redirect — extract the real URL
                             if ($resultUrl -match 'uddg=([^&]+)') {
                                 $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
@@ -521,6 +524,9 @@ function Search-BreachInfo {
                             $resultUrl = $match.Groups[1].Value
                             $resultTitle = $match.Groups[2].Value.Trim()
 
+                            # Skip results with empty titles (mandatory param)
+                            if (-not $resultTitle) { continue }
+
                             if ($resultUrl -match 'uddg=([^&]+)') {
                                 $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
                             }
@@ -595,26 +601,45 @@ function Invoke-GenAISummary {
         $resultText = $resultSummary -join "`n"
 
         $prompt = @"
-You are an AU-13 compliance analyst. Analyze the following scan results for the keyword "$Keyword" and provide:
-1. A brief risk assessment (1-2 sentences)
-2. Key findings summary (bullet points)
-3. Recommended actions
-4. Additional sources: Search the web for any additional public disclosures, data breaches, paste site leaks, or security incidents related to "$Keyword" that are NOT already in the scan results below. List each additional source with its URL and a brief description.
+You are an AU-13 compliance analyst, specializing in NIST SP 800-53 AU-13: monitoring for unauthorized disclosure of organizational information (e.g., data breaches, leaks on paste sites, GitHub, or security blogs). Analyze the provided scan results for the keyword "$Keyword". Base your response strictly on the results and any additional live web searches. Focus on events from the last $DaysBack days. Provide your output in Markdown format with the following sections:
 
+### 1. Risk Assessment
+A brief assessment (1-2 sentences) of the overall risk level, using severity levels like Critical, High, Medium, or Low.
+
+### 2. Key Findings
+Bullet-point summary of the most important findings from the scan results, including any suggested severity.
+
+### 3. Recommended Actions
+Bullet-point list of practical, compliance-focused actions (e.g., investigate, notify stakeholders).
+
+### 4. Additional Sources
+Use live web search to find any NEW public disclosures, data breaches, paste site leaks, or security incidents related to "$Keyword" that are NOT in the scan results below (check by URL and content). If none found, state "No additional sources identified." Otherwise, list each as:
+- **Title/Description**: Brief summary (1 sentence).
+- **URL**: Full link.
+- **Date**: Approximate date of the event.
 Scan Results:
 $resultText
 "@
     }
     else {
         $prompt = @"
-You are an AU-13 compliance analyst. The automated scan found NO results for "$Keyword" on monitored sites (paste sites, GitHub, breach databases, security news).
+You are an AU-13 compliance analyst, specializing in NIST SP 800-53 AU-13: monitoring for unauthorized disclosure of organizational information (e.g., data breaches, leaks on paste sites, GitHub, or security blogs). The automated scan found NO results for "$Keyword" on monitored sites (paste sites, GitHub, breach databases, security news). Use your live web search capability to check for any public disclosures, data breaches, paste site leaks, credential dumps, or security incidents related to "$Keyword" from the last $DaysBack days. Base your response strictly on search findings—do not hallucinate. If no evidence found, explicitly state so. Provide your output in Markdown format with the following sections:
 
-Using your live search capability, search the web for any public disclosures, data breaches, paste site leaks, credential dumps, or security incidents related to "$Keyword". Provide:
-1. A brief risk assessment (1-2 sentences)
-2. Any findings from your search (with source URLs for each finding)
-3. Recommended actions
+### 1. Risk Assessment
+A brief assessment (1-2 sentences) of the overall risk level, using severity levels like Critical, High, Medium, or Low.
 
-If you find evidence of compromise or disclosure, list each source with its full URL.
+### 2. Key Findings
+Bullet-point summary of any findings from your search (with source URLs inline). If none, state "No findings from live search."
+
+### 3. Recommended Actions
+Bullet-point list of practical, compliance-focused actions (e.g., continue monitoring).
+
+### 4. Additional Sources
+List each finding as:
+- **Title/Description**: Brief summary (1 sentence).
+- **URL**: Full link.
+- **Date**: Approximate date of the event.
+If none, state "No additional sources identified."
 "@
     }
 
