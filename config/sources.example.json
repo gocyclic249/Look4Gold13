@@ -1,0 +1,40 @@
+{
+    "ddgDorks": [
+        { "label": "Code exposure",    "dork": "github code exposed repository" },
+        { "label": "Pastebin",         "dork": "site:pastebin.com" },
+        { "label": "GitHub",           "dork": "site:github.com" },
+        { "label": "GitHub Gist",      "dork": "site:gist.github.com" },
+        { "label": "Reddit",           "dork": "site:reddit.com" },
+        { "label": "Dropbox (public)", "dork": "site:dropbox.com/s/" },
+        { "label": "Google Docs",      "dork": "site:docs.google.com" },
+        { "label": "Archive.org",      "dork": "site:archive.org" },
+        { "label": "PDF files",        "dork": "filetype:pdf" },
+        { "label": "Excel files",      "dork": "filetype:xlsx" },
+        { "label": "Word docs",        "dork": "filetype:doc" },
+        { "label": "CSV files",        "dork": "filetype:csv" }
+    ],
+    "breachDorks": [
+        { "label": "Breach/leak news",    "dork": "breach data leak compromised" },
+        { "label": "Ransomware/attacks",  "dork": "ransomware attack security incident" },
+        { "label": "Credential exposure", "dork": "credential stolen dark web" },
+        { "label": "Have I Been Pwned",   "dork": "site:haveibeenpwned.com" },
+        { "label": "DataBreaches.net",    "dork": "site:databreaches.net" },
+        { "label": "BleepingComputer",    "dork": "site:bleepingcomputer.com" },
+        { "label": "KrebsOnSecurity",     "dork": "site:krebsonsecurity.com" },
+        { "label": "BreachForums (agg)",  "dork": "breachforums breach leaked database" }
+    ],
+    "pasteSites": [
+        { "name": "Pastebin",     "domain": "pastebin.com" },
+        { "name": "Paste.ee",     "domain": "paste.ee" },
+        { "name": "Ghostbin",     "domain": "ghostbin.com" },
+        { "name": "Dpaste",       "domain": "dpaste.org" },
+        { "name": "Rentry",       "domain": "rentry.co" },
+        { "name": "JustPaste.it", "domain": "justpaste.it" },
+        { "name": "ControlC",     "domain": "controlc.com" },
+        { "name": "PrivateBin",   "domain": "privatebin.net" },
+        { "name": "0bin",         "domain": "0bin.net" },
+        { "name": "Hastebin",     "domain": "hastebin.com" },
+        { "name": "Ideone",       "domain": "ideone.com" },
+        { "name": "GitHub Gist",  "domain": "gist.github.com" }
+    ]
+}

@@ -129,15 +129,21 @@ DuckDuckGo may rate-limit or CAPTCHA-block requests depending on your source IP.
 
 | Source | Method | Auth Required |
 |---|---|---|
-| **DuckDuckGo** | HTML lite endpoint with grouped `site:` and `filetype:` OR queries (5 queries/keyword) with CAPTCHA detection and retry | No |
-| **Paste Sites** | Manual DuckDuckGo search links for 8 paste sites (Pastebin, Paste.ee, Ghostbin, Dpaste, Rentry, JustPaste.it, ControlC, PrivateBin) | No |
-| **Breach Info** | DuckDuckGo searches across 15 security/breach sites in 5 groups — only results with actual hits are included | No |
+| **DuckDuckGo** | HTML lite endpoint with `site:`, `filetype:`, and contextual dork queries (12 queries/keyword) including social media, file sharing, and archive sites — with CAPTCHA detection and retry | No |
+| **Paste Sites** | Manual DuckDuckGo search links for 12 paste sites (Pastebin, Paste.ee, Ghostbin, Dpaste, Rentry, JustPaste.it, ControlC, PrivateBin, 0bin, Hastebin, Ideone, GitHub Gist) | No |
+| **Breach Info** | DuckDuckGo searches across security/breach sites in 8 query groups — only results with actual hits are included | No |
 
-### Security Blogs & Breach Sites Monitored
+### Sites & Platforms Monitored
 
-haveibeenpwned.com, krebsonsecurity.com, bleepingcomputer.com, securityweek.com, therecord.media, databreaches.net, breachdirectory.org, cybernews.com, hackread.com, securityaffairs.com, darkreading.com, thehackernews.com, schneier.com, arstechnica.com, reddit.com/r/netsec, reddit.com/r/cybersecurity
+**Breach/Security News** (via Breach Info dorks): haveibeenpwned.com, databreaches.net, bleepingcomputer.com, krebsonsecurity.com, plus contextual searches for breach announcements, ransomware incidents, credential exposures, and BreachForums aggregator mentions.
 
-> **Note:** GitHub is searched via DuckDuckGo `site:github.com` dorks, which avoids the strict rate limits of the GitHub Search API. No GitHub token is required.
+**Social Media & Code** (via DuckDuckGo dorks): reddit.com, github.com, gist.github.com
+
+**File Sharing & Archives** (via DuckDuckGo dorks): dropbox.com (public links), docs.google.com, archive.org
+
+**Paste Sites** (manual search links): pastebin.com, paste.ee, ghostbin.com, dpaste.org, rentry.co, justpaste.it, controlc.com, privatebin.net, 0bin.net, hastebin.com, ideone.com, gist.github.com
+
+> **Note:** All searches are routed through DuckDuckGo's HTML lite endpoint — no direct API access or authentication is needed for any of these sites.
 >
 > **Note:** Report links include a "DDG search" link for each finding so you can verify the search that found it. These URLs are also passed to GenAI for context.
 

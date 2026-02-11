@@ -2,7 +2,7 @@
     "genai": {
         "endpoint": "https://api.x.ai/v1/chat/completions",
         "tokenEnvVar": "GENAI_API_TOKEN",
-        "model": "grok-3",
+        "model": "grok-4",
         "persona": 5,
         "temperature": 0.7,
         "limit_references": 5,
