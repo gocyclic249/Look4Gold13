@@ -348,22 +348,21 @@ function Search-DuckDuckGo {
     # Broad contextual queries first (most effective — DDG returns top results from any site).
     # Then targeted site: queries for high-priority sites that may not surface in broad search.
     # Finally filetype: queries for document exposure.
+    # DDG focuses on code/paste/social/file exposure.
+    # Breach/security news queries are handled by Search-BreachInfo.
     $dorks = @(
-        @{ Label = 'Breach/leak mentions'; Dork = 'breach data leak exposed' },
-        @{ Label = 'Paste/credential';     Dork = 'pastebin paste credential dump' },
-        @{ Label = 'Code exposure';        Dork = 'github code exposed repository' },
-        @{ Label = 'Pastebin';             Dork = 'site:pastebin.com' },
-        @{ Label = 'GitHub';               Dork = 'site:github.com' },
-        @{ Label = 'GitHub Gist';          Dork = 'site:gist.github.com' },
-        @{ Label = 'Reddit';              Dork = 'site:reddit.com' },
-        @{ Label = 'Twitter/X';            Dork = 'site:x.com' },
-        @{ Label = 'Dropbox (public)';     Dork = 'site:dropbox.com/s/' },
-        @{ Label = 'Google Docs';          Dork = 'site:docs.google.com' },
-        @{ Label = 'Archive.org';          Dork = 'site:archive.org' },
-        @{ Label = 'PDF files';            Dork = 'filetype:pdf' },
-        @{ Label = 'Excel files';          Dork = 'filetype:xlsx' },
-        @{ Label = 'Word docs';            Dork = 'filetype:doc' },
-        @{ Label = 'CSV files';            Dork = 'filetype:csv' }
+        @{ Label = 'Code exposure';    Dork = 'github code exposed repository' },
+        @{ Label = 'Pastebin';         Dork = 'site:pastebin.com' },
+        @{ Label = 'GitHub';           Dork = 'site:github.com' },
+        @{ Label = 'GitHub Gist';      Dork = 'site:gist.github.com' },
+        @{ Label = 'Reddit';           Dork = 'site:reddit.com' },
+        @{ Label = 'Dropbox (public)'; Dork = 'site:dropbox.com/s/' },
+        @{ Label = 'Google Docs';      Dork = 'site:docs.google.com' },
+        @{ Label = 'Archive.org';      Dork = 'site:archive.org' },
+        @{ Label = 'PDF files';        Dork = 'filetype:pdf' },
+        @{ Label = 'Excel files';      Dork = 'filetype:xlsx' },
+        @{ Label = 'Word docs';        Dork = 'filetype:doc' },
+        @{ Label = 'CSV files';        Dork = 'filetype:csv' }
     )
 
     Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($dorks.Count) queries/keyword, ${DelaySeconds}s delay)..." -ForegroundColor Cyan
@@ -464,9 +463,19 @@ function Search-DuckDuckGo {
                             if (-not $resultTitle) { continue }
 
                             # DDG wraps URLs in a redirect — extract the real URL
+                            # Handle both & and &amp; as parameter separators
                             if ($resultUrl -match 'uddg=([^&]+)') {
                                 $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
                             }
+                            # Strip any remaining DDG redirect wrapper
+                            if ($resultUrl -match '^(//|https?://)duckduckgo\.com') {
+                                if ($resultUrl -match 'uddg=([^&]+)') {
+                                    $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
+                                } else { continue }
+                            }
+                            # Ensure valid scheme
+                            if ($resultUrl -match '^//') { $resultUrl = 'https:' + $resultUrl }
+                            if ($resultUrl -notmatch '^https?://') { $resultUrl = 'https://' + $resultUrl }
 
                             # Dedup by URL
                             $urlKey = "$keyword|$resultUrl"
@@ -648,12 +657,32 @@ function Search-BreachInfo {
                     if ($linkMatches.Count -gt 0) {
                         $newCount = 0
                         foreach ($match in $linkMatches) {
-                            $resultUrl = $match.Groups[1].Value
-                            $resultTitle = $match.Groups[2].Value.Trim()
+                            # Handle robust regex groups (href in group 2 or 3, title in 4)
+                            if ($match.Groups.Count -ge 5 -and $match.Groups[4].Value) {
+                                $resultUrl = if ($match.Groups[2].Value) { $match.Groups[2].Value } else { $match.Groups[3].Value }
+                                $resultTitle = $match.Groups[4].Value.Trim()
+                            } else {
+                                $resultUrl = $match.Groups[1].Value
+                                $resultTitle = $match.Groups[2].Value.Trim()
+                            }
 
+                            # DDG wraps URLs in a redirect — extract the real URL
+                            # Handle both & and &amp; as parameter separators
                             if ($resultUrl -match 'uddg=([^&]+)') {
                                 $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
                             }
+                            # Strip any remaining DDG redirect wrapper
+                            if ($resultUrl -match '^(//|https?://)duckduckgo\.com') {
+                                if ($resultUrl -match 'uddg=([^&]+)') {
+                                    $resultUrl = [System.Uri]::UnescapeDataString($Matches[1])
+                                } else { continue }
+                            }
+                            # Ensure valid scheme
+                            if ($resultUrl -match '^//') { $resultUrl = 'https:' + $resultUrl }
+                            if ($resultUrl -notmatch '^https?://') { $resultUrl = 'https://' + $resultUrl }
+
+                            # Skip results with empty titles
+                            if (-not $resultTitle) { continue }
 
                             # Dedup by URL
                             $urlKey = "$keyword|$resultUrl"
@@ -943,12 +972,21 @@ function Export-AU13Html {
             $src   = [System.Web.HttpUtility]::HtmlEncode($r.Source)
             $sev   = $r.Severity
 
-            # Render DDG search URLs as clickable links in the snippet
+            # Extract clean display URL (domain + path, no query string noise)
+            $displayUrl = try {
+                $uri = [System.Uri]$r.Url
+                $path = if ($uri.AbsolutePath -and $uri.AbsolutePath -ne '/') { $uri.AbsolutePath } else { '' }
+                if ($path.Length -gt 60) { $path = $path.Substring(0, 57) + '...' }
+                [System.Web.HttpUtility]::HtmlEncode("$($uri.Host)$path")
+            } catch { $url }
+
+            # Build snippet: show DDG search link if available
+            $snip = ""
             if ($r.Snippet -match '^DDG search: (.+)$') {
                 $searchUrl = [System.Web.HttpUtility]::HtmlEncode($Matches[1])
-                $snip = "Found via: <a href=`"$searchUrl`" target=`"_blank`">DDG search</a>"
+                $snip = "<a href=`"$searchUrl`" target=`"_blank`" class=`"ddg-link`">View DDG search</a>"
             }
-            else {
+            elseif ($r.Snippet) {
                 $snip = [System.Web.HttpUtility]::HtmlEncode($r.Snippet)
             }
 
@@ -961,11 +999,28 @@ function Export-AU13Html {
                 default         { '#333' }
             }
 
+            # Use title as link text; fall back to domain if title looks like a URL
+            $linkText = if ($title -match '^https?://') { $displayUrl } else { $title }
+
             if ($url) {
-                $listItems += "            <li><a href=`"$url`" target=`"_blank`">$title</a> &mdash; <em>$src</em> <span class=`"severity-badge`" style=`"background:$sevColor;`">$sev</span><br><small>$snip</small></li>`n"
+                $listItems += @"
+            <li>
+                <div class="result-header"><a href="$url" target="_blank">$linkText</a> <span class="severity-badge" style="background:$sevColor;">$sev</span></div>
+                <div class="result-meta"><span class="result-source">$src</span> <span class="result-url">$displayUrl</span></div>
+                $(if ($snip) { "<div class=`"result-snippet`">$snip</div>" })
+            </li>
+
+"@
             }
             else {
-                $listItems += "            <li>$title &mdash; <em>$src</em> <span class=`"severity-badge`" style=`"background:$sevColor;`">$sev</span><br><small>$snip</small></li>`n"
+                $listItems += @"
+            <li>
+                <div class="result-header">$linkText <span class="severity-badge" style="background:$sevColor;">$sev</span></div>
+                <div class="result-meta"><span class="result-source">$src</span></div>
+                $(if ($snip) { "<div class=`"result-snippet`">$snip</div>" })
+            </li>
+
+"@
             }
         }
 
@@ -1076,11 +1131,18 @@ $resultSection
         .query-block h2 { margin-top: 0; color: #1a1a2e; font-size: 1.15em; }
         .result-count { font-weight: bold; color: #555; }
         .query-block ul { list-style: none; padding-left: 0; }
-        .query-block li { padding: 8px 0; border-bottom: 1px solid #eee; }
+        .query-block li { padding: 10px 0; border-bottom: 1px solid #eee; }
         .query-block li:last-child { border-bottom: none; }
         .query-block a { color: #0d6efd; text-decoration: none; }
         .query-block a:hover { text-decoration: underline; }
-        .query-block small { color: #777; }
+        .result-header { font-size: 1em; }
+        .result-header a { font-weight: 500; }
+        .result-meta { font-size: 0.82em; color: #666; margin-top: 2px; }
+        .result-source { color: #555; font-weight: 500; }
+        .result-url { color: #0a7; }
+        .result-snippet { font-size: 0.82em; color: #777; margin-top: 2px; }
+        .ddg-link { font-size: 0.82em; color: #888; }
+        .ddg-link:hover { color: #0d6efd; }
         .ai-summary { background: #f0f4ff; border-left: 4px solid #4a6cf7; padding: 12px 16px; margin-top: 12px; border-radius: 0 4px 4px 0; }
         .ai-summary h3 { margin: 0 0 8px 0; color: #4a6cf7; font-size: 0.95em; }
         .ai-content { font-size: 0.9em; line-height: 1.6; color: #444; }
@@ -1269,6 +1331,25 @@ if ('Breach' -in $Sources) {
     $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState)
     $allResults += $breachResults
     Write-Host ""
+}
+
+# --- Cross-source deduplication (keep highest severity per keyword+URL) ---
+$sevRank = @{ 'Critical' = 4; 'High' = 3; 'Medium' = 2; 'Review' = 1; 'Manual-Review' = 0 }
+$dedupMap = @{}
+foreach ($r in $allResults) {
+    $key = "$($r.Keyword)|$($r.Url)"
+    if ($dedupMap.ContainsKey($key)) {
+        $existingRank = $sevRank[$dedupMap[$key].Severity]
+        $newRank = $sevRank[$r.Severity]
+        if ($newRank -gt $existingRank) { $dedupMap[$key] = $r }
+    } else {
+        $dedupMap[$key] = $r
+    }
+}
+$dupeCount = $allResults.Count - $dedupMap.Count
+$allResults = @($dedupMap.Values)
+if ($dupeCount -gt 0) {
+    Write-Host "[Dedup] Removed $dupeCount duplicate results across sources" -ForegroundColor Gray
 }
 
 # --- Summary ---

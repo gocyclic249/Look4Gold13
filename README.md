@@ -129,7 +129,7 @@ DuckDuckGo may rate-limit or CAPTCHA-block requests depending on your source IP.
 
 | Source | Method | Auth Required |
 |---|---|---|
-| **DuckDuckGo** | HTML lite endpoint with `site:`, `filetype:`, and contextual dork queries (15 queries/keyword) including social media, file sharing, and archive sites — with CAPTCHA detection and retry | No |
+| **DuckDuckGo** | HTML lite endpoint with `site:`, `filetype:`, and contextual dork queries (12 queries/keyword) including social media, file sharing, and archive sites — with CAPTCHA detection and retry | No |
 | **Paste Sites** | Manual DuckDuckGo search links for 12 paste sites (Pastebin, Paste.ee, Ghostbin, Dpaste, Rentry, JustPaste.it, ControlC, PrivateBin, 0bin, Hastebin, Ideone, GitHub Gist) | No |
 | **Breach Info** | DuckDuckGo searches across security/breach sites in 8 query groups — only results with actual hits are included | No |
 
@@ -137,7 +137,7 @@ DuckDuckGo may rate-limit or CAPTCHA-block requests depending on your source IP.
 
 **Breach/Security News** (via Breach Info dorks): haveibeenpwned.com, databreaches.net, bleepingcomputer.com, krebsonsecurity.com, plus contextual searches for breach announcements, ransomware incidents, credential exposures, and BreachForums aggregator mentions.
 
-**Social Media & Code** (via DuckDuckGo dorks): reddit.com, x.com (Twitter), github.com, gist.github.com
+**Social Media & Code** (via DuckDuckGo dorks): reddit.com, github.com, gist.github.com
 
 **File Sharing & Archives** (via DuckDuckGo dorks): dropbox.com (public links), docs.google.com, archive.org
 
