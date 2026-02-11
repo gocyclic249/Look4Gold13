@@ -46,6 +46,32 @@ API Key Sources:
   - Grok/xAI: https://console.x.ai/
 
 
+SEARCH SOURCES FILE (sources.json)
+------------------------------------
+The sources file defines the search dorks and paste site domains used by
+the scanner. The default file ships with the repo and works out of the box.
+
+To customize:
+  1. Edit config/sources.json directly. Use sources.example.json as a
+     reference if you want to reset a section to defaults.
+
+  2. Each section is replaced independently. If you provide ddgDorks, your
+     entire list replaces the default DDG dorks. Omit a section (or set it
+     to an empty array []) to keep the built-in defaults for that section.
+
+  3. This file is NOT gitignored since it contains non-sensitive search
+     patterns. Your changes will be tracked by git.
+
+Sections:
+  ddgDorks      DuckDuckGo search dorks (label + dork query string)
+  breachDorks   Breach/security news dorks (label + dork query string)
+  pasteSites    Paste site definitions (name + domain; URL built at runtime)
+
+Example - adding a custom DDG dork:
+  Copy the full ddgDorks array from sources.example.json, then append:
+    { "label": "My internal site", "dork": "site:internal.example.com" }
+
+
 SETTINGS REFERENCE
 ------------------------------------
 genai.endpoint        API endpoint URL
@@ -75,3 +101,5 @@ au13-config.example.grok.json     Grok (xAI) config template
 au13-config.json                  Your config (gitignored, create from example)
 keywords.example.txt              Starter keywords with example phrases
 keywords.txt                      Your keywords (gitignored, create from example)
+sources.json                      Search dorks and paste site config (editable)
+sources.example.json              Default search sources (reference copy)

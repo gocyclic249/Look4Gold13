@@ -142,7 +142,22 @@ function ConvertFrom-Markdown {
     if ($inList) { [void]$html.Append('</ul>') }
     if ($inCodeBlock) { [void]$html.Append('</code></pre>') }
 
-    return $html.ToString()
+    # Replace severity tags like [HIGH], [CRITICAL] with styled badges
+    $sevColors = @{
+        'CRITICAL'      = '#dc3545'
+        'HIGH'          = '#c71585'
+        'MEDIUM'        = '#ffc107'
+        'REVIEW'        = '#17a2b8'
+        'MANUAL-REVIEW' = '#6c757d'
+        'LOW'           = '#28a745'
+    }
+    $result = $html.ToString()
+    foreach ($tag in $sevColors.Keys) {
+        $color = $sevColors[$tag]
+        $result = $result -replace "\[$tag\]", "<span class=`"severity-badge`" style=`"background:$color;`">$tag</span>"
+    }
+
+    return $result
 }
 
 function Invoke-WebRequestWithRetry {
@@ -324,6 +339,94 @@ function Import-AU13Config {
     return $defaults
 }
 
+function Import-AU13Sources {
+    param(
+        [string]$Path
+    )
+
+    if (-not $Path) {
+        $Path = Join-Path $PSScriptRoot "config/sources.json"
+    }
+
+    # --- Hardcoded defaults (ultimate fallback) ---
+    $defaults = @{
+        ddgDorks = @(
+            @{ Label = 'Code exposure';    Dork = 'github code exposed repository' },
+            @{ Label = 'Pastebin';         Dork = 'site:pastebin.com' },
+            @{ Label = 'GitHub';           Dork = 'site:github.com' },
+            @{ Label = 'GitHub Gist';      Dork = 'site:gist.github.com' },
+            @{ Label = 'Reddit';           Dork = 'site:reddit.com' },
+            @{ Label = 'Dropbox (public)'; Dork = 'site:dropbox.com/s/' },
+            @{ Label = 'Google Docs';      Dork = 'site:docs.google.com' },
+            @{ Label = 'Archive.org';      Dork = 'site:archive.org' },
+            @{ Label = 'PDF files';        Dork = 'filetype:pdf' },
+            @{ Label = 'Excel files';      Dork = 'filetype:xlsx' },
+            @{ Label = 'Word docs';        Dork = 'filetype:doc' },
+            @{ Label = 'CSV files';        Dork = 'filetype:csv' }
+        )
+        breachDorks = @(
+            @{ Label = 'Breach/leak news';    Dork = 'breach data leak compromised' },
+            @{ Label = 'Ransomware/attacks';  Dork = 'ransomware attack security incident' },
+            @{ Label = 'Credential exposure'; Dork = 'credential stolen dark web' },
+            @{ Label = 'Have I Been Pwned';   Dork = 'site:haveibeenpwned.com' },
+            @{ Label = 'DataBreaches.net';    Dork = 'site:databreaches.net' },
+            @{ Label = 'BleepingComputer';    Dork = 'site:bleepingcomputer.com' },
+            @{ Label = 'KrebsOnSecurity';     Dork = 'site:krebsonsecurity.com' },
+            @{ Label = 'BreachForums (agg)';  Dork = 'breachforums breach leaked database' }
+        )
+        pasteSites = @(
+            @{ Name = 'Pastebin';     Domain = 'pastebin.com' },
+            @{ Name = 'Paste.ee';     Domain = 'paste.ee' },
+            @{ Name = 'Ghostbin';     Domain = 'ghostbin.com' },
+            @{ Name = 'Dpaste';       Domain = 'dpaste.org' },
+            @{ Name = 'Rentry';       Domain = 'rentry.co' },
+            @{ Name = 'JustPaste.it'; Domain = 'justpaste.it' },
+            @{ Name = 'ControlC';     Domain = 'controlc.com' },
+            @{ Name = 'PrivateBin';   Domain = 'privatebin.net' },
+            @{ Name = '0bin';         Domain = '0bin.net' },
+            @{ Name = 'Hastebin';     Domain = 'hastebin.com' },
+            @{ Name = 'Ideone';       Domain = 'ideone.com' },
+            @{ Name = 'GitHub Gist';  Domain = 'gist.github.com' }
+        )
+    }
+
+    if (Test-Path $Path) {
+        try {
+            $fileConfig = Get-Content -Path $Path -Raw | ConvertFrom-Json
+
+            # Full replacement per section: if user provides the key with
+            # a non-empty array, it completely replaces the default.
+            if ($fileConfig.ddgDorks -and $fileConfig.ddgDorks.Count -gt 0) {
+                $defaults.ddgDorks = @($fileConfig.ddgDorks | ForEach-Object {
+                    @{ Label = $_.label; Dork = $_.dork }
+                })
+            }
+
+            if ($fileConfig.breachDorks -and $fileConfig.breachDorks.Count -gt 0) {
+                $defaults.breachDorks = @($fileConfig.breachDorks | ForEach-Object {
+                    @{ Label = $_.label; Dork = $_.dork }
+                })
+            }
+
+            if ($fileConfig.pasteSites -and $fileConfig.pasteSites.Count -gt 0) {
+                $defaults.pasteSites = @($fileConfig.pasteSites | ForEach-Object {
+                    @{ Name = $_.name; Domain = $_.domain }
+                })
+            }
+
+            Write-Verbose "Loaded search sources from $Path"
+        }
+        catch {
+            Write-Warning "Failed to parse sources file '$Path': $($_.Exception.Message). Using defaults."
+        }
+    }
+    else {
+        Write-Verbose "No sources file at '$Path'. Using built-in defaults."
+    }
+
+    return $defaults
+}
+
 # ============================================================================
 # SEARCH FUNCTIONS
 # ============================================================================
@@ -339,33 +442,15 @@ function Search-DuckDuckGo {
 
         [string]$ProxyBase = '',
 
-        [ref]$CaptchaState
+        [ref]$CaptchaState,
+
+        [array]$Dorks = @()
     )
 
     $results = @()
     $seenUrls = @{}  # Dedup across queries
 
-    # Broad contextual queries first (most effective — DDG returns top results from any site).
-    # Then targeted site: queries for high-priority sites that may not surface in broad search.
-    # Finally filetype: queries for document exposure.
-    # DDG focuses on code/paste/social/file exposure.
-    # Breach/security news queries are handled by Search-BreachInfo.
-    $dorks = @(
-        @{ Label = 'Code exposure';    Dork = 'github code exposed repository' },
-        @{ Label = 'Pastebin';         Dork = 'site:pastebin.com' },
-        @{ Label = 'GitHub';           Dork = 'site:github.com' },
-        @{ Label = 'GitHub Gist';      Dork = 'site:gist.github.com' },
-        @{ Label = 'Reddit';           Dork = 'site:reddit.com' },
-        @{ Label = 'Dropbox (public)'; Dork = 'site:dropbox.com/s/' },
-        @{ Label = 'Google Docs';      Dork = 'site:docs.google.com' },
-        @{ Label = 'Archive.org';      Dork = 'site:archive.org' },
-        @{ Label = 'PDF files';        Dork = 'filetype:pdf' },
-        @{ Label = 'Excel files';      Dork = 'filetype:xlsx' },
-        @{ Label = 'Word docs';        Dork = 'filetype:doc' },
-        @{ Label = 'CSV files';        Dork = 'filetype:csv' }
-    )
-
-    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($dorks.Count) queries/keyword, ${DelaySeconds}s delay)..." -ForegroundColor Cyan
+    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($Dorks.Count) queries/keyword, ${DelaySeconds}s delay)..." -ForegroundColor Cyan
 
     foreach ($keyword in $Keywords) {
         Write-Host "[DuckDuckGo] Searching for '$keyword'..." -ForegroundColor Gray
@@ -519,27 +604,21 @@ function Search-PasteSites {
 
         [int]$DaysBack = 30,
 
-        [string]$ProxyBase = ''
+        [string]$ProxyBase = '',
+
+        [array]$PasteSitesDef = @()
     )
 
     $results = @()
 
     foreach ($keyword in $Keywords) {
         $ddgBase = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/" -ProxyBase $ProxyBase
-        $pasteSites = @(
-            @{ Name = 'Pastebin';     Url = "${ddgBase}?q=site:pastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Paste.ee';     Url = "${ddgBase}?q=site:paste.ee+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Ghostbin';     Url = "${ddgBase}?q=site:ghostbin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Dpaste';       Url = "${ddgBase}?q=site:dpaste.org+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Rentry';       Url = "${ddgBase}?q=site:rentry.co+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'JustPaste.it'; Url = "${ddgBase}?q=site:justpaste.it+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'ControlC';     Url = "${ddgBase}?q=site:controlc.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'PrivateBin';   Url = "${ddgBase}?q=site:privatebin.net+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = '0bin';         Url = "${ddgBase}?q=site:0bin.net+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Hastebin';     Url = "${ddgBase}?q=site:hastebin.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'Ideone';       Url = "${ddgBase}?q=site:ideone.com+%22$([System.Uri]::EscapeDataString($keyword))%22" },
-            @{ Name = 'GitHub Gist';  Url = "${ddgBase}?q=site:gist.github.com+%22$([System.Uri]::EscapeDataString($keyword))%22" }
-        )
+        $pasteSites = @($PasteSitesDef | ForEach-Object {
+            @{
+                Name = $_.Name
+                Url  = "${ddgBase}?q=site:$($_.Domain)+%22$([System.Uri]::EscapeDataString($keyword))%22"
+            }
+        })
 
         Write-Host "[PasteSites] Manual search URLs for '$keyword':" -ForegroundColor Gray
         foreach ($site in $pasteSites) {
@@ -562,25 +641,15 @@ function Search-BreachInfo {
 
         [string]$ProxyBase = '',
 
-        [ref]$CaptchaState
+        [ref]$CaptchaState,
+
+        [array]$BreachDorks = @()
     )
 
     $results = @()
     $seenUrls = @{}  # Dedup across queries
 
-    # Broad contextual queries first, then targeted high-priority breach sites.
-    $breachDorks = @(
-        @{ Label = 'Breach/leak news';    Dork = 'breach data leak compromised' },
-        @{ Label = 'Ransomware/attacks';  Dork = 'ransomware attack security incident' },
-        @{ Label = 'Credential exposure'; Dork = 'credential stolen dark web' },
-        @{ Label = 'Have I Been Pwned';   Dork = 'site:haveibeenpwned.com' },
-        @{ Label = 'DataBreaches.net';    Dork = 'site:databreaches.net' },
-        @{ Label = 'BleepingComputer';    Dork = 'site:bleepingcomputer.com' },
-        @{ Label = 'KrebsOnSecurity';     Dork = 'site:krebsonsecurity.com' },
-        @{ Label = 'BreachForums (agg)';  Dork = 'breachforums breach leaked database' }
-    )
-
-    Write-Host "[BreachInfo] Searching $($breachDorks.Count) queries/keyword, ${DelaySeconds}s delay..." -ForegroundColor Cyan
+    Write-Host "[BreachInfo] Searching $($BreachDorks.Count) queries/keyword, ${DelaySeconds}s delay..." -ForegroundColor Cyan
 
     foreach ($keyword in $Keywords) {
         Write-Host "[BreachInfo] Searching for '$keyword'..." -ForegroundColor Gray
@@ -1210,6 +1279,9 @@ Write-Host $banner -ForegroundColor Yellow
 # --- Load config file ---
 $config = Import-AU13Config -Path $ConfigFile
 
+# --- Load search sources ---
+$sourcesConfig = Import-AU13Sources
+
 # --- Resolve GenAI Token ---
 $genaiToken = Get-EnvVar $config.genai.tokenEnvVar
 if (-not $genaiToken) {
@@ -1312,7 +1384,7 @@ $captchaState = @{ HitCount = 0; CurrentDelay = $config.search.delaySeconds; Blo
 # --- DuckDuckGo ---
 if ('DuckDuckGo' -in $Sources) {
     Write-Host "=== Scanning DuckDuckGo... ===" -ForegroundColor White
-    $ddgResults = Search-DuckDuckGo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState)
+    $ddgResults = Search-DuckDuckGo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState) -Dorks $sourcesConfig.ddgDorks
     $allResults += $ddgResults
     Write-Host ""
 }
@@ -1320,7 +1392,7 @@ if ('DuckDuckGo' -in $Sources) {
 # --- Paste Sites ---
 if ('Paste' -in $Sources) {
     Write-Host "=== Scanning Paste Sites... ===" -ForegroundColor White
-    $pasteResults = Search-PasteSites -Keywords $keywords -DaysBack $DaysBack -ProxyBase $proxyBase
+    $pasteResults = Search-PasteSites -Keywords $keywords -DaysBack $DaysBack -ProxyBase $proxyBase -PasteSitesDef $sourcesConfig.pasteSites
     $allResults += $pasteResults
     Write-Host ""
 }
@@ -1328,7 +1400,7 @@ if ('Paste' -in $Sources) {
 # --- Breach Info ---
 if ('Breach' -in $Sources) {
     Write-Host "=== Scanning Breach Sources... ===" -ForegroundColor White
-    $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState)
+    $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState) -BreachDorks $sourcesConfig.breachDorks
     $allResults += $breachResults
     Write-Host ""
 }
