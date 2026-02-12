@@ -6,7 +6,8 @@
 *.log
 /Output/
 /Reports/
-ddg_debug.html
+debug_*.html
+menlo_*_debug.html
 
 # Environment and secrets
 .env

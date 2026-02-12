@@ -19,34 +19,86 @@ Copy-Item config/keywords.example.txt config/keywords.txt
 # Edit config/keywords.txt - add your organization-specific search terms
 ```
 
-**2. (Optional) Set up GenAI token for AI-powered summaries:**
+**2. (Optional) Set up GenAI token for AI-powered summaries and Web UI:**
 
 ```powershell
 [System.Environment]::SetEnvironmentVariable("GENAI_API_TOKEN", "your-key", "User")
+# Restart PowerShell after setting User-level env vars
 ```
 
-**3. Run the scanner:**
+When a GenAI token is set, the script automatically launches the **Web UI** — a browser-based dashboard with real-time scan progress, keyword editing, AI analysis, and report generation.
+
+**3. (Optional) Set up NVD API key for faster CVE searches:**
 
 ```powershell
-# Interactive mode - prompts for everything
+[System.Environment]::SetEnvironmentVariable("NVD_API_KEY", "your-key", "User")
+```
+
+Without a key, NVD searches still work but are rate-limited to 5 requests per 30 seconds. With a key, the rate is 50 requests per 30 seconds. Get a free key at: https://nvd.nist.gov/developers/request-an-api-key
+
+**4. Run the scanner:**
+
+```powershell
+# Default mode - launches Web UI if GenAI token is set, otherwise interactive CLI
 .\Look4Gold13.ps1
 
-# Silent mode - uses defaults, no prompts
+# Silent mode - uses defaults, no prompts, CLI only
 .\Look4Gold13.ps1 -Silent
+
+# Government computer with Menlo Security proxy
+.\Look4Gold13.ps1 -UseProxy
 ```
 
 ## Requirements
 
 - PowerShell 7.0+
-- GenAI API token (optional, for AI summaries) — supports either:
+- GenAI API token (optional, for AI summaries + Web UI default mode) — supports either:
   - **Ask Sage** (army.mil) — Settings > Account > Manage API Keys
   - **Grok** (xAI) — [xAI API Console](https://console.x.ai/)
+- NVD API key (optional, for faster CVE queries) — [Request a free key](https://nvd.nist.gov/developers/request-an-api-key)
 
-## Usage
+## Operational Modes
 
-### Interactive Mode (default)
+The script has three modes of operation:
 
-Just run the script. It will prompt for everything:
+### Web UI Mode (default when GenAI token is available)
+
+When a GenAI API token is configured, the script automatically launches a **browser-based dashboard** at `http://localhost:<port>/`. No `-WebUI` flag needed.
+
+Features:
+- **Keyword editor** — add, remove, and save keywords directly in the browser (updates `config/keywords.txt`)
+- **Real-time scan progress** — progress bar, per-search log, and live results table
+- **AI analysis** — per-keyword AI summaries displayed inline
+- **Report generation** — one-click HTML report export
+- **Auto-shutdown** — server automatically stops 5 seconds after report generation
+- **Manual shutdown** — "Shutdown Server" button always available in the page footer
+- **Dual search mode** — automatically selects the right search strategy based on your network (see below)
+
+```powershell
+# Launches Web UI automatically (GenAI token must be set)
+.\Look4Gold13.ps1
+
+# Explicitly request Web UI
+.\Look4Gold13.ps1 -WebUI
+
+# Web UI on government network
+.\Look4Gold13.ps1 -UseProxy
+```
+
+**Dual Search Mode:**
+
+The Web UI automatically detects your network and picks the right search strategy:
+
+| Network | Search Mode | Console Output |
+|---|---|---|
+| Direct (no proxy) | DDG + Breach + NVD | `[Search: Standard (DDG + Breach + NVD direct)]` |
+| Government (Menlo proxy) | AskSage + NVD | `[Search: AskSage (gov network via Menlo proxy)]` |
+
+On direct networks, the Web UI uses DuckDuckGo and Breach scraping (same as CLI mode). On government networks where web scraping is blocked by Menlo Security, it uses AskSage API for live web searches. **NIST NVD CVE searches work on all networks** — the NVD API is a .gov endpoint accessible directly.
+
+### Interactive CLI Mode
+
+When no GenAI token is set, the script falls back to interactive CLI mode and prompts for all settings:
 
 ```powershell
 .\Look4Gold13.ps1
@@ -59,7 +111,7 @@ You'll be asked for:
 - Which sources to scan
 - Output file path
 
-### Silent Mode
+### Silent CLI Mode
 
 Use the `-Silent` flag with parameters for automated/scheduled runs:
 
@@ -81,17 +133,95 @@ Use the `-Silent` flag with parameters for automated/scheduled runs:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `-Silent` | off | Skip prompts, use flags/defaults |
+| `-Silent` | off | Skip prompts, use flags/defaults (CLI mode) |
+| `-WebUI` | auto | Launch browser-based dashboard (auto-enabled when GenAI token is set) |
 | `-KeywordFile` | `./config/keywords.txt` | Path to keywords file |
 | `-DaysBack` | 30 | How many days back to search |
-| `-Sources` | All | Which sources: `DuckDuckGo`, `Paste`, `Breach` |
+| `-Sources` | All | Which sources: `DuckDuckGo`, `Breach` |
 | `-OutputFile` | Auto-generated | Path for HTML report |
 | `-ConfigFile` | `config/au13-config.json` | Path to config file |
 | `-UseProxy` | off | Route searches through Menlo Security proxy (gov computers) |
 
+## Sources Scanned
+
+| Source | Method | Auth Required | Network |
+|---|---|---|---|
+| **DuckDuckGo** | HTML lite endpoint with `site:`, `filetype:`, and contextual dork queries (22 queries/keyword) covering code repos, paste sites, social media, file sharing, and archive sites — with CAPTCHA detection and retry | No | Direct |
+| **Breach Info** | DuckDuckGo searches across security/breach sites in 8 query groups — only results with actual hits are included | No | Direct |
+| **NIST NVD CVEs** | Direct API queries to the National Vulnerability Database for CVEs matching keywords, with CVSS severity mapping | No (optional API key for faster rate) | All networks |
+| **AskSage Live Search** | AI-powered web search across 6 categories (paste sites, code repos, documents, breach DBs, security news, forums/social) | GenAI token | Gov network |
+
+### Sites & Platforms Monitored
+
+**Breach/Security News** (via Breach Info dorks): haveibeenpwned.com, databreaches.net, bleepingcomputer.com, krebsonsecurity.com, plus contextual searches for breach announcements, ransomware incidents, credential exposures, and BreachForums aggregator mentions.
+
+**Social Media & Code** (via DuckDuckGo dorks): reddit.com, github.com, gist.github.com
+
+**Paste Sites** (via DuckDuckGo dorks): pastebin.com, paste.ee, ghostbin.com, dpaste.org, rentry.co, justpaste.it, controlc.com, privatebin.net, 0bin.net, hastebin.com, ideone.com
+
+**File Sharing & Archives** (via DuckDuckGo dorks): dropbox.com (public links), docs.google.com, archive.org
+
+**Vulnerability Database**: NIST National Vulnerability Database (NVD) — CVEs with CVSS severity scores
+
+> **Note:** All DuckDuckGo searches are routed through the HTML lite endpoint — no direct API access or authentication is needed for any of these sites.
+>
+> **Note:** Report links include a "DDG search" link for each finding so you can verify the search that found it. These URLs are also passed to GenAI for context.
+
+## NIST NVD CVE Database
+
+The scanner queries the [NIST National Vulnerability Database](https://nvd.nist.gov/) for CVEs matching your keywords within the configured time window. This runs in **all modes** (Web UI, Interactive CLI, Silent CLI) and on **all networks** (the NVD API is a .gov endpoint — no proxy needed).
+
+### How It Works
+
+- Searches `https://services.nvd.nist.gov/rest/json/cves/2.0` for each keyword
+- Filters by publication date (based on your `-DaysBack` setting)
+- Paginates automatically for large result sets
+- Maps CVSS base scores to severity levels:
+
+| CVSS Score | Severity |
+|---|---|
+| 9.0 - 10.0 | Critical |
+| 7.0 - 8.9 | High |
+| 4.0 - 6.9 | Medium |
+| < 4.0 or unscored | Review |
+
+### Rate Limiting
+
+| Mode | Rate | How |
+|---|---|---|
+| No API key | 5 requests / 30 seconds (7s delay) | Default — works out of the box |
+| With API key | 50 requests / 30 seconds (0.8s delay) | Set `$env:NVD_API_KEY` |
+
+### Setting Up an API Key (Optional)
+
+```powershell
+# Get a free key at https://nvd.nist.gov/developers/request-an-api-key
+[System.Environment]::SetEnvironmentVariable("NVD_API_KEY", "your-key", "User")
+# Restart PowerShell after setting
+```
+
+The console will indicate which rate is active:
+```
+[NVD] API key detected - using fast rate
+[NVD] No API key - using public rate (7s delay)
+```
+
 ## Government Network / Menlo Security Proxy
 
-Government computers typically route web traffic through [Menlo Security](https://safe.menlosecurity.com) web isolation. The script supports this with the `-UseProxy` flag, which prefixes all DuckDuckGo URLs with the Menlo Security proxy base.
+Government computers typically route web traffic through [Menlo Security](https://safe.menlosecurity.com) web isolation. The script handles this in two ways:
+
+**Web UI mode** (default): Automatically switches to **AskSage API** for web searches when a proxy is detected. AskSage performs live web searches server-side, bypassing Menlo's JavaScript-based isolation that blocks traditional web scraping. The console clearly shows the active mode:
+
+```
+Launching Web UI... [Search: AskSage (gov network via Menlo proxy)]
+
+  Look4Gold13 Web UI running at: http://localhost:55306/
+  Search mode: AskSage + NVD
+```
+
+**CLI mode**: Uses the `-UseProxy` flag to prefix DuckDuckGo URLs with the Menlo Security proxy base. Includes CAPTCHA detection, exponential backoff, and interstitial handling.
+
+**NVD CVE searches always work** on government networks — the NVD API is a .gov endpoint that doesn't go through Menlo.
 
 ### Before Running with Proxy
 
@@ -124,27 +254,6 @@ DuckDuckGo may rate-limit or CAPTCHA-block requests depending on your source IP.
 - **Use the Menlo proxy** (`-UseProxy`) — works well on government computers and also avoids direct IP-based rate limits
 - **Increase the delay** — set `search.delaySeconds` to `5` or higher in your config file
 - **Email addresses as keywords** — queries containing `@` (e.g., `user@domain.com`) trigger DDG's bot detection more aggressively, resulting in 403 errors. The script will automatically retry with exponential backoff, but expect slower scans when using email keywords. Using a VPN or the Menlo proxy helps.
-
-## Sources Scanned
-
-| Source | Method | Auth Required |
-|---|---|---|
-| **DuckDuckGo** | HTML lite endpoint with `site:`, `filetype:`, and contextual dork queries (22 queries/keyword) covering code repos, paste sites, social media, file sharing, and archive sites — with CAPTCHA detection and retry | No |
-| **Breach Info** | DuckDuckGo searches across security/breach sites in 8 query groups — only results with actual hits are included | No |
-
-### Sites & Platforms Monitored
-
-**Breach/Security News** (via Breach Info dorks): haveibeenpwned.com, databreaches.net, bleepingcomputer.com, krebsonsecurity.com, plus contextual searches for breach announcements, ransomware incidents, credential exposures, and BreachForums aggregator mentions.
-
-**Social Media & Code** (via DuckDuckGo dorks): reddit.com, github.com, gist.github.com
-
-**Paste Sites** (via DuckDuckGo dorks): pastebin.com, paste.ee, ghostbin.com, dpaste.org, rentry.co, justpaste.it, controlc.com, privatebin.net, 0bin.net, hastebin.com, ideone.com
-
-**File Sharing & Archives** (via DuckDuckGo dorks): dropbox.com (public links), docs.google.com, archive.org
-
-> **Note:** All searches are routed through DuckDuckGo's HTML lite endpoint — no direct API access or authentication is needed for any of these sites.
->
-> **Note:** Report links include a "DDG search" link for each finding so you can verify the search that found it. These URLs are also passed to GenAI for context.
 
 ## GenAI Summarization
 
@@ -309,6 +418,13 @@ You don't need to include every setting. For example, to only change the delay:
 | `search.sources` | `["DuckDuckGo", "Paste", "Breach"]` | Default sources to scan |
 | `search.webProxyBase` | `https://safe.menlosecurity.com` | Web isolation proxy base URL (used with `-UseProxy`) |
 
+### Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `GENAI_API_TOKEN` | Optional | GenAI API key (enables AI summaries + Web UI default mode) |
+| `NVD_API_KEY` | Optional | NIST NVD API key (faster CVE queries: 50 req/30s vs 5 req/30s) |
+
 ## Output
 
 Results are saved as an **HTML report** with:
@@ -316,6 +432,7 @@ Results are saved as an **HTML report** with:
 - Severity badges (Critical, High, Medium, Review, Manual-Review)
 - Snippet previews for each finding
 - AI analysis per keyword (when GenAI token is configured)
+- CVE entries with CVSS scores and links to NVD detail pages
 
 Reports are saved to `./Output/AU13_Scan_<timestamp>.html` by default.
 
@@ -332,11 +449,16 @@ Copy-Item config/keywords.example.txt config/keywords.txt
 # Then add your own terms at the bottom
 ```
 
+In **Web UI mode**, keywords can also be edited directly in the browser — add, remove, and save without touching the file manually.
+
 ## Project Structure
 
 ```
 Look4Gold13/
-├── Look4Gold13.ps1                       # Main script (copy this)
+├── Look4Gold13.ps1                       # Main script (single-file, no dependencies)
+├── README.md                             # This file
+├── LICENSE                               # License
+├── .gitignore
 ├── Output/                               # HTML reports (gitignored)
 └── config/
     ├── README.txt                        # Configuration instructions
@@ -344,5 +466,7 @@ Look4Gold13/
     ├── au13-config.example.grok.json     # Grok (xAI) config template
     ├── au13-config.json                  # Your config (gitignored)
     ├── keywords.example.txt              # Starter keywords with common phrases
-    └── keywords.txt                      # Your keywords (gitignored)
+    ├── keywords.txt                      # Your keywords (gitignored)
+    ├── sources.example.json              # Default search dorks reference
+    └── sources.json                      # Editable search dorks
 ```
