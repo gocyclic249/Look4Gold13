@@ -1223,27 +1223,17 @@ function Invoke-AskSageSearch {
     }
 
     $prompt = @"
-You are an AU-13 compliance web search tool. Search the web for unauthorized disclosure of information related to "$Keyword" on $($Category.Label) ($($Category.Sites)).
+Use your live web search capability to search for "$Keyword" in the context of $($Category.Label) ($($Category.Description)).
 
-Focus on: leaked credentials, API keys, source code, sensitive documents, data breaches, and security incidents from the last $DaysBack days.
+Search for: "$Keyword" data breach, "$Keyword" leak, "$Keyword" credentials exposed, "$Keyword" security incident — focusing on the last $DaysBack days.
 
-For EACH finding, return this EXACT JSON format (no other text before or after the JSON):
-```json
-[
-  {
-    "url": "https://exact-url-here",
-    "title": "Brief title of the finding",
-    "severity": "Critical|High|Medium|Review",
-    "snippet": "1-2 sentence description of what was found"
-  }
-]
-```
+For each real finding, return a JSON array:
+[{"url":"https://...","title":"...","severity":"Critical|High|Medium|Review","snippet":"..."}]
 
-Rules:
-- Only include REAL findings with REAL URLs. Do not hallucinate.
-- severity: Critical = active credential/data exposure, High = sensitive code/docs exposed, Medium = mentions of potential exposure, Review = general references
-- If no results found, return exactly: []
-- Search specifically on: $($Category.Sites)
+Severity: Critical = active credential/data exposure, High = sensitive code/docs, Medium = potential exposure mentions, Review = general references.
+
+If nothing found, return exactly: []
+Do not fabricate URLs or results.
 "@
 
     if ($isOpenAI) {
@@ -1295,9 +1285,9 @@ Rules:
         # Parse JSON from response (handle markdown code blocks)
         $jsonText = $messageText
         if ($jsonText -match '(?s)```(?:json)?\s*(\[[\s\S]*?\])\s*```') {
-            $jsonText = $Matches[1]
-        } elseif ($jsonText -match '(?s)(\[[\s\S]*\])') {
-            $jsonText = $Matches[1]
+            $jsonText = $Matches[1].Trim()
+        } elseif ($jsonText -match '(?s)(\[[\s\S]*?\])') {
+            $jsonText = $Matches[1].Trim()
         } else {
             # No JSON array found — try to extract URLs from plain text
             $results = @()

@@ -6,7 +6,8 @@
         "persona": 5,
         "temperature": 0.7,
         "limit_references": 5,
-        "live": 1
+        "web_search": "live+",
+	"dataset": "all"
     },
     "search": {
         "daysBack": 30,
