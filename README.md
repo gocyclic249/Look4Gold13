@@ -1,4 +1,4 @@
-# Look4Gold13 - AU-13 Compliance Scanner
+# DO NOT USE Latest UPDATE for NIPR completely broke this
 
 > **ALPHA** — This script is in early alpha testing. Expect rough edges, breaking changes, and incomplete features. If you run into bugs or have ideas for improvements, please [open an issue](https://github.com/gocyclic249/Look4Gold13/issues) — feedback and recommendations are welcome!
 
