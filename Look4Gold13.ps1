@@ -51,8 +51,13 @@ param(
 # TLS CONFIGURATION
 # ============================================================================
 
-# Force TLS 1.2 — fixes "The underlying connection was closed" errors
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+# Enable TLS 1.2 + 1.3 (if available) for browser-like TLS negotiation
+# Browsers negotiate TLS 1.3; security proxies like Menlo may flag TLS 1.2-only clients
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+} catch {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+}
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -241,10 +246,12 @@ function Test-MenloInterstitial {
 function Test-MenloSafeView {
     param([string]$Html)
     if (-not $Html) { return $false }
-    # Menlo SafeView renders a thin JS client shell with no actual page content
-    return ($Html -match 'sv_role\s*=\s*"main"' -or
-            $Html -match 'safeview-info' -or
-            ($Html -match 'menlosecurity\.com' -and $Html -notmatch 'result__a' -and $Html -notmatch 'proceed-link'))
+    # Only flag SafeView as a problem when it has NO DDG search content.
+    # SafeView WITH content (result__a links, uddg= params) is GOOD — Menlo rendered the DDG page
+    # and our existing regex chain can parse it. Only empty SafeView shells are a problem.
+    $isSafeView = ($Html -match 'sv_role\s*=\s*"main"' -or $Html -match 'safeview-info')
+    $hasContent = ($Html -match 'result__a' -or $Html -match 'uddg=')
+    return ($isSafeView -and -not $hasContent)
 }
 
 function Invoke-DdgRequestWithMenloHandling {
@@ -262,12 +269,27 @@ function Invoke-DdgRequestWithMenloHandling {
     $displayUrl = $requestUrl  # Always the proxied URL for report links
     $currentDelay = if ($CaptchaState) { $CaptchaState.Value.CurrentDelay } else { $DelaySeconds }
 
+    # Browser-like headers to prevent Menlo Security from showing interstitial
+    # Menlo serves SafeView-rendered DDG results to browsers but shows "Proceed with Caution"
+    # to non-browser clients that lack standard headers
     $baseReqParams = @{
         UseBasicParsing = $true
         TimeoutSec      = 15
         ErrorAction     = 'Stop'
         Headers         = @{
-            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+            'User-Agent'                = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+            'Accept'                    = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+            'Accept-Language'           = 'en-US,en;q=0.9'
+            'Accept-Encoding'           = 'gzip, deflate'
+            'Sec-CH-UA'                 = '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"'
+            'Sec-CH-UA-Mobile'          = '?0'
+            'Sec-CH-UA-Platform'        = '"Windows"'
+            'Sec-Fetch-Dest'            = 'document'
+            'Sec-Fetch-Mode'            = 'navigate'
+            'Sec-Fetch-Site'            = 'none'
+            'Sec-Fetch-User'            = '?1'
+            'Upgrade-Insecure-Requests' = '1'
+            'DNT'                       = '1'
         }
     }
     if ($WebSession) {
@@ -1439,7 +1461,19 @@ if ($proxyBase) {
             ErrorAction     = 'Stop'
             WebSession      = $webSession
             Headers         = @{
-                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+                'User-Agent'                = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+                'Accept'                    = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+                'Accept-Language'           = 'en-US,en;q=0.9'
+                'Accept-Encoding'           = 'gzip, deflate'
+                'Sec-CH-UA'                 = '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"'
+                'Sec-CH-UA-Mobile'          = '?0'
+                'Sec-CH-UA-Platform'        = '"Windows"'
+                'Sec-Fetch-Dest'            = 'document'
+                'Sec-Fetch-Mode'            = 'navigate'
+                'Sec-Fetch-Site'            = 'none'
+                'Sec-Fetch-User'            = '?1'
+                'Upgrade-Insecure-Requests' = '1'
+                'DNT'                       = '1'
             }
         }
         $warmupResponse = Invoke-WebRequest @warmupParams
