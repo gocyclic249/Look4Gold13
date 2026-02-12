@@ -230,6 +230,113 @@ function Get-ProxiedUrl {
     return $Url
 }
 
+function Test-MenloInterstitial {
+    param([string]$Html)
+    if (-not $Html) { return $false }
+    # Menlo "Proceed with Caution" page has a proceed-link element and Menlo branding
+    return ($Html -match 'id\s*=\s*"?proceed-link' -or
+            ($Html -match 'Proceed with Caution' -and $Html -match 'menlosecurity'))
+}
+
+function Test-MenloSafeView {
+    param([string]$Html)
+    if (-not $Html) { return $false }
+    # Menlo SafeView renders a thin JS client shell with no actual page content
+    return ($Html -match 'sv_role\s*=\s*"main"' -or
+            $Html -match 'safeview-info' -or
+            ($Html -match 'menlosecurity\.com' -and $Html -notmatch 'result__a' -and $Html -notmatch 'proceed-link'))
+}
+
+function Invoke-DdgRequestWithMenloHandling {
+    param(
+        [Parameter(Mandatory)][string]$DirectUrl,
+        [string]$ProxyBase,
+        [Microsoft.PowerShell.Commands.WebRequestSession]$WebSession,
+        [ref]$CaptchaState,
+        [int]$DelaySeconds = 5,
+        [string]$DorkLabel = ''
+    )
+
+    # Determine request URL (proxied or direct)
+    $requestUrl = Get-ProxiedUrl -Url $DirectUrl -ProxyBase $ProxyBase
+    $displayUrl = $requestUrl  # Always the proxied URL for report links
+    $currentDelay = if ($CaptchaState) { $CaptchaState.Value.CurrentDelay } else { $DelaySeconds }
+
+    $baseReqParams = @{
+        UseBasicParsing = $true
+        TimeoutSec      = 15
+        ErrorAction     = 'Stop'
+        Headers         = @{
+            'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+        }
+    }
+    if ($WebSession) {
+        $baseReqParams['WebSession'] = $WebSession
+    }
+
+    # --- Attempt 1: Request through proxy (or direct if no proxy) ---
+    $reqParams = $baseReqParams.Clone()
+    $reqParams['Uri'] = $requestUrl
+
+    $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 5 -BaseDelaySeconds $currentDelay
+    $html = $webResponse.Content
+
+    # --- Check: Menlo Interstitial ("Proceed with Caution") ---
+    if ($ProxyBase -and (Test-MenloInterstitial -Html $html)) {
+        Write-Host "  [Menlo] Interstitial detected for $DorkLabel - retrying with session cookies..." -ForegroundColor Yellow
+        $debugFile = Join-Path $PSScriptRoot "menlo_interstitial_debug.html"
+        $html | Out-File -FilePath $debugFile -Encoding UTF8
+        Start-Sleep -Seconds 2
+        # Retry same proxied URL — WebSession now carries cookies Menlo set
+        $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 2 -BaseDelaySeconds 3
+        $html = $webResponse.Content
+
+        # If still interstitial, cookie approach did not work — fall back to direct
+        if (Test-MenloInterstitial -Html $html) {
+            Write-Host "  [Menlo] Interstitial persists - falling back to direct URL..." -ForegroundColor Yellow
+            $reqParams['Uri'] = $DirectUrl
+            $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $currentDelay
+            $html = $webResponse.Content
+        }
+    }
+
+    # --- Check: Menlo SafeView (thin JS shell, no usable content) ---
+    if ($ProxyBase -and (Test-MenloSafeView -Html $html)) {
+        Write-Host "  [Menlo] SafeView JS shell detected - falling back to direct URL..." -ForegroundColor Yellow
+        $debugFile = Join-Path $PSScriptRoot "menlo_safeview_debug.html"
+        $html | Out-File -FilePath $debugFile -Encoding UTF8
+        $reqParams['Uri'] = $DirectUrl
+        $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 3 -BaseDelaySeconds $currentDelay
+        $html = $webResponse.Content
+    }
+
+    # --- Check: DDG CAPTCHA ---
+    $captchaDetected = $false
+    if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal' -or $html -match 'cc=botnet') {
+        Write-Host "  [CAPTCHA] DDG rate limit hit - pausing 30s..." -ForegroundColor Yellow
+        if ($CaptchaState) {
+            $CaptchaState.Value.HitCount++
+            $CaptchaState.Value.CurrentDelay = [math]::Min(10, $CaptchaState.Value.CurrentDelay + 2)
+        }
+        Start-Sleep -Seconds 30
+        # Retry once after cooldown
+        $webResponse = Invoke-WebRequest @reqParams
+        $html = $webResponse.Content
+        if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal') {
+            $captchaDetected = $true
+            if ($CaptchaState) { $CaptchaState.Value.Blocked = $true }
+        }
+    }
+
+    return @{
+        Html           = $html
+        Response       = $webResponse
+        CaptchaBlocked = $captchaDetected
+        RequestUrl     = $reqParams['Uri']
+        DisplayUrl     = $displayUrl
+    }
+}
+
 function New-AU13Result {
     param(
         [Parameter(Mandatory)][string]$Source,
@@ -434,13 +541,16 @@ function Search-DuckDuckGo {
 
         [ref]$CaptchaState,
 
-        [array]$Dorks = @()
+        [array]$Dorks = @(),
+
+        [Microsoft.PowerShell.Commands.WebRequestSession]$WebSession
     )
 
     $results = @()
     $seenUrls = @{}  # Dedup across queries
 
-    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($Dorks.Count) queries/keyword, ${DelaySeconds}s delay)..." -ForegroundColor Cyan
+    $proxyNote = if ($ProxyBase) { ' (via Menlo proxy with session cookies)' } else { '' }
+    Write-Host "[DuckDuckGo] Searching via HTML lite endpoint ($($Dorks.Count) queries/keyword, ${DelaySeconds}s delay)$proxyNote..." -ForegroundColor Cyan
 
     foreach ($keyword in $Keywords) {
         Write-Host "[DuckDuckGo] Searching for '$keyword'..." -ForegroundColor Gray
@@ -454,39 +564,24 @@ function Search-DuckDuckGo {
 
             $query = "`"$keyword`" $($dork.Dork)"
             $encodedQuery = [System.Uri]::EscapeDataString($query)
-            $ddgUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/?q=$encodedQuery" -ProxyBase $ProxyBase
-
+            $directUrl = "https://html.duckduckgo.com/html/?q=$encodedQuery"
             $currentDelay = if ($CaptchaState) { $CaptchaState.Value.CurrentDelay } else { $DelaySeconds }
 
             try {
-                $reqParams = @{
-                    Uri             = $ddgUrl
-                    UseBasicParsing = $true
-                    TimeoutSec      = 15
-                    ErrorAction     = 'Stop'
-                    Headers         = @{
-                    'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
-                    }
-                }
-                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 5 -BaseDelaySeconds $currentDelay
-                $html = $webResponse.Content
+                $requestResult = Invoke-DdgRequestWithMenloHandling `
+                    -DirectUrl $directUrl `
+                    -ProxyBase $ProxyBase `
+                    -WebSession $WebSession `
+                    -CaptchaState $CaptchaState `
+                    -DelaySeconds $currentDelay `
+                    -DorkLabel $dork.Label
 
-                # Detect DDG CAPTCHA/bot block (HTTP 202 with "select all squares")
-                if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal' -or $html -match 'cc=botnet') {
-                    Write-Host "  [CAPTCHA] DDG rate limit hit - pausing 30s before continuing..." -ForegroundColor Yellow
-                    if ($CaptchaState) {
-                        $CaptchaState.Value.HitCount++
-                        $CaptchaState.Value.CurrentDelay = [math]::Min(10, $CaptchaState.Value.CurrentDelay + 2)
-                    }
-                    Start-Sleep -Seconds 30
-                    # Retry once after cooldown
-                    $webResponse = Invoke-WebRequest @reqParams
-                    $html = $webResponse.Content
-                    if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal') {
-                        Write-Host "  [CAPTCHA] Still blocked - skipping remaining dorks for '$keyword'" -ForegroundColor Red
-                        if ($CaptchaState) { $CaptchaState.Value.Blocked = $true }
-                        break
-                    }
+                $html = $requestResult.Html
+                $ddgUrl = $requestResult.DisplayUrl
+
+                if ($requestResult.CaptchaBlocked) {
+                    Write-Host "  [CAPTCHA] Still blocked - skipping remaining dorks for '$keyword'" -ForegroundColor Red
+                    break
                 }
 
                 # Detect DDG "query too long" error
@@ -570,8 +665,9 @@ function Search-DuckDuckGo {
                     }
                     else {
                         Write-Host "  [No Results] $($dork.Label)" -ForegroundColor DarkGray
-                        Write-Host "  [Debug] No matches found - saving HTML to ddg_debug.html for inspection" -ForegroundColor Yellow
-                        $html | Out-File -FilePath "ddg_debug.html" -Encoding UTF8
+                        $debugFile = Join-Path $PSScriptRoot "debug_ddg_$($dork.Label -replace '[^a-zA-Z0-9]','_').html"
+                        Write-Host "  [Debug] Saving HTML to $debugFile" -ForegroundColor Yellow
+                        $html | Out-File -FilePath $debugFile -Encoding UTF8
                     }
                 }
             }
@@ -600,13 +696,16 @@ function Search-BreachInfo {
 
         [ref]$CaptchaState,
 
-        [array]$BreachDorks = @()
+        [array]$BreachDorks = @(),
+
+        [Microsoft.PowerShell.Commands.WebRequestSession]$WebSession
     )
 
     $results = @()
     $seenUrls = @{}  # Dedup across queries
 
-    Write-Host "[BreachInfo] Searching $($BreachDorks.Count) queries/keyword, ${DelaySeconds}s delay..." -ForegroundColor Cyan
+    $proxyNote = if ($ProxyBase) { ' (via Menlo proxy with session cookies)' } else { '' }
+    Write-Host "[BreachInfo] Searching $($BreachDorks.Count) queries/keyword, ${DelaySeconds}s delay$proxyNote..." -ForegroundColor Cyan
 
     foreach ($keyword in $Keywords) {
         Write-Host "[BreachInfo] Searching for '$keyword'..." -ForegroundColor Gray
@@ -620,38 +719,24 @@ function Search-BreachInfo {
 
             $query = "`"$keyword`" $($dork.Dork)"
             $encodedQuery = [System.Uri]::EscapeDataString($query)
-            $ddgUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/?q=$encodedQuery" -ProxyBase $ProxyBase
-
+            $directUrl = "https://html.duckduckgo.com/html/?q=$encodedQuery"
             $currentDelay = if ($CaptchaState) { $CaptchaState.Value.CurrentDelay } else { $DelaySeconds }
 
             try {
-                $reqParams = @{
-                    Uri             = $ddgUrl
-                    UseBasicParsing = $true
-                    TimeoutSec      = 15
-                    ErrorAction     = 'Stop'
-                    Headers         = @{
-                        'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-                    }
-                }
-                $webResponse = Invoke-WebRequestWithRetry -RequestParams $reqParams -MaxRetries 5 -BaseDelaySeconds $currentDelay
-                $html = $webResponse.Content
+                $requestResult = Invoke-DdgRequestWithMenloHandling `
+                    -DirectUrl $directUrl `
+                    -ProxyBase $ProxyBase `
+                    -WebSession $WebSession `
+                    -CaptchaState $CaptchaState `
+                    -DelaySeconds $currentDelay `
+                    -DorkLabel $dork.Label
 
-                # Detect CAPTCHA
-                if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal' -or $html -match 'cc=botnet') {
-                    Write-Host "  [CAPTCHA] DDG rate limit hit - pausing 30s..." -ForegroundColor Yellow
-                    if ($CaptchaState) {
-                        $CaptchaState.Value.HitCount++
-                        $CaptchaState.Value.CurrentDelay = [math]::Min(10, $CaptchaState.Value.CurrentDelay + 2)
-                    }
-                    Start-Sleep -Seconds 30
-                    $webResponse = Invoke-WebRequest @reqParams
-                    $html = $webResponse.Content
-                    if ($webResponse.StatusCode -eq 202 -or $html -match 'anomaly-modal') {
-                        Write-Host "  [CAPTCHA] Still blocked - skipping remaining dorks for '$keyword'" -ForegroundColor Red
-                        if ($CaptchaState) { $CaptchaState.Value.Blocked = $true }
-                        break
-                    }
+                $html = $requestResult.Html
+                $ddgUrl = $requestResult.DisplayUrl
+
+                if ($requestResult.CaptchaBlocked) {
+                    Write-Host "  [CAPTCHA] Still blocked - skipping remaining dorks for '$keyword'" -ForegroundColor Red
+                    break
                 }
 
                 if ($html -match 'too long') {
@@ -731,8 +816,9 @@ function Search-BreachInfo {
                     }
                     else {
                         Write-Host "  [No Results] $($dork.Label)" -ForegroundColor DarkGray
-                        Write-Host "  [Debug] No matches found - saving HTML to ddg_debug.html for inspection" -ForegroundColor Yellow
-                        $html | Out-File -FilePath "ddg_debug.html" -Encoding UTF8
+                        $debugFile = Join-Path $PSScriptRoot "debug_ddg_$($dork.Label -replace '[^a-zA-Z0-9]','_').html"
+                        Write-Host "  [Debug] Saving HTML to $debugFile" -ForegroundColor Yellow
+                        $html | Out-File -FilePath $debugFile -Encoding UTF8
                     }
                 }
             }
@@ -1338,10 +1424,48 @@ $allResults = @()
 # triggers CAPTCHA, the escalated delay carries over to BreachInfo queries.
 $captchaState = @{ HitCount = 0; CurrentDelay = $config.search.delaySeconds; Blocked = $false }
 
+# Shared web session — persists cookies across all searches (esp. Menlo Security session cookies)
+$webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+
+# Warm up session through Menlo proxy to pre-establish cookies before search queries
+if ($proxyBase) {
+    Write-Host "[Menlo] Warming up session through proxy..." -ForegroundColor Gray
+    try {
+        $warmupUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/" -ProxyBase $proxyBase
+        $warmupParams = @{
+            Uri             = $warmupUrl
+            UseBasicParsing = $true
+            TimeoutSec      = 15
+            ErrorAction     = 'Stop'
+            WebSession      = $webSession
+            Headers         = @{
+                'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+            }
+        }
+        $warmupResponse = Invoke-WebRequest @warmupParams
+        if (Test-MenloInterstitial -Html $warmupResponse.Content) {
+            Write-Host "[Menlo] Interstitial received on warmup - cookies captured, retrying..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
+            $warmupResponse = Invoke-WebRequest @warmupParams
+            if (Test-MenloInterstitial -Html $warmupResponse.Content) {
+                Write-Host "[Menlo] Interstitial persists - will use per-request fallback to direct." -ForegroundColor Yellow
+            } else {
+                Write-Host "[Menlo] Session established through proxy." -ForegroundColor Green
+            }
+        } else {
+            Write-Host "[Menlo] Session established through proxy." -ForegroundColor Green
+        }
+    }
+    catch {
+        Write-Host "[Menlo] Warmup failed: $($_.Exception.Message). Continuing..." -ForegroundColor Yellow
+    }
+    Start-Sleep -Seconds 2
+}
+
 # --- DuckDuckGo ---
 if ('DuckDuckGo' -in $Sources) {
     Write-Host "=== Scanning DuckDuckGo... ===" -ForegroundColor White
-    $ddgResults = Search-DuckDuckGo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState) -Dorks $sourcesConfig.ddgDorks
+    $ddgResults = Search-DuckDuckGo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState) -Dorks $sourcesConfig.ddgDorks -WebSession $webSession
     $allResults += $ddgResults
     Write-Host ""
 }
@@ -1349,7 +1473,7 @@ if ('DuckDuckGo' -in $Sources) {
 # --- Breach Info ---
 if ('Breach' -in $Sources) {
     Write-Host "=== Scanning Breach Sources... ===" -ForegroundColor White
-    $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState) -BreachDorks $sourcesConfig.breachDorks
+    $breachResults = Search-BreachInfo -Keywords $keywords -DaysBack $DaysBack -DelaySeconds $config.search.delaySeconds -ProxyBase $proxyBase -CaptchaState ([ref]$captchaState) -BreachDorks $sourcesConfig.breachDorks -WebSession $webSession
     $allResults += $breachResults
     Write-Host ""
 }
