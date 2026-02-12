@@ -1223,20 +1223,17 @@ function Invoke-AskSageSearch {
     }
 
     $prompt = @"
-As part of NIST SP 800-53 AU-13 compliance monitoring, search for any unauthorized disclosure of information related to "$Keyword".
+Use your live web search capability to search for "$Keyword" in the context of $($Category.Label) ($($Category.Description)).
 
-Focus area: $($Category.Label) — look for "$Keyword" on sites like $($Category.Sites).
+Search for: "$Keyword" data breach, "$Keyword" leak, "$Keyword" credentials exposed, "$Keyword" security incident — focusing on the last $DaysBack days.
 
-Look for: leaked credentials, API keys, source code, sensitive documents, data breaches, PII exposure, and security incidents from the last $DaysBack days.
-
-If you find any results, respond with ONLY a JSON array in this format:
+For each real finding, return a JSON array:
 [{"url":"https://...","title":"...","severity":"Critical|High|Medium|Review","snippet":"..."}]
 
-Severity guide: Critical = active credential/data exposure, High = sensitive code/docs, Medium = potential exposure mentions, Review = general references.
+Severity: Critical = active credential/data exposure, High = sensitive code/docs, Medium = potential exposure mentions, Review = general references.
 
-If nothing is found, respond with exactly: []
-
-Important: Only include real findings with real, verifiable URLs. Do not fabricate results.
+If nothing found, return exactly: []
+Do not fabricate URLs or results.
 "@
 
     if ($isOpenAI) {
