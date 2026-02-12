@@ -6,14 +6,18 @@
     Scans multiple sources for unauthorized disclosure of organizational
     information per NIST SP 800-53 AU-13.
 
-    Sources: DuckDuckGo (including paste sites), Breach/Security Blogs
+    Sources: DuckDuckGo (including paste sites), Breach/Security Blogs, AskSage Live Search
 
     After scanning, sends results per keyword to a GenAI API (Ask Sage)
     for summarization. The AI summary is embedded in the HTML report.
 
-    Two modes:
+    On government networks where web scraping is blocked (Menlo Security,
+    CAPTCHAs), automatically uses AskSage API for live web searches instead.
+
+    Three modes:
       Interactive (default) - prompts for all settings
       Silent (-Silent)      - uses flags and defaults, no prompts
+      Web UI (-WebUI)       - browser-based dashboard at localhost
 .EXAMPLE
     .\Look4Gold13.ps1
     # Interactive mode - prompts for everything
@@ -29,6 +33,12 @@
 .EXAMPLE
     .\Look4Gold13.ps1 -Silent -UseProxy
     # Silent mode through Menlo Security proxy
+.EXAMPLE
+    .\Look4Gold13.ps1 -WebUI
+    # Launch browser-based dashboard (uses AskSage for searches)
+.EXAMPLE
+    .\Look4Gold13.ps1 -WebUI -UseProxy
+    # Web UI mode on government network
 #>
 param(
     [switch]$Silent,
@@ -44,7 +54,9 @@ param(
     [ValidateSet('DuckDuckGo', 'Breach')]
     [string[]]$Sources,
 
-    [switch]$UseProxy
+    [switch]$UseProxy,
+
+    [switch]$WebUI
 )
 
 # ============================================================================
@@ -1027,6 +1039,659 @@ If none, state "No additional sources identified."
 }
 
 # ============================================================================
+# ASKSAGE WEB SEARCH (replaces DDG scraping on government networks)
+# ============================================================================
+
+function Get-AskSageSearchCategories {
+    return @(
+        @{
+            Id          = 'paste_sites'
+            Label       = 'Paste Sites'
+            Description = 'Paste-sharing sites where data leaks are commonly posted'
+            Sites       = 'pastebin.com, paste.ee, ghostbin.com, dpaste.org, rentry.co, justpaste.it, controlc.com, privatebin.net, 0bin.net, hastebin.com'
+        },
+        @{
+            Id          = 'code_repos'
+            Label       = 'Code Repositories'
+            Description = 'Code hosting platforms where credentials or source code may be exposed'
+            Sites       = 'github.com, gist.github.com, gitlab.com, bitbucket.org, ideone.com'
+        },
+        @{
+            Id          = 'documents'
+            Label       = 'Document Exposure'
+            Description = 'Publicly accessible documents (PDF, Excel, Word, CSV)'
+            Sites       = 'docs.google.com, dropbox.com, scribd.com'
+        },
+        @{
+            Id          = 'breach_db'
+            Label       = 'Breach Databases'
+            Description = 'Breach notification sites and databases'
+            Sites       = 'haveibeenpwned.com, databreaches.net, dehashed.com'
+        },
+        @{
+            Id          = 'security_news'
+            Label       = 'Security News'
+            Description = 'Security news sites reporting on breaches and incidents'
+            Sites       = 'bleepingcomputer.com, krebsonsecurity.com, therecord.media, securityweek.com'
+        },
+        @{
+            Id          = 'forums_social'
+            Label       = 'Forums & Social'
+            Description = 'Discussion forums and social media'
+            Sites       = 'reddit.com, archive.org, medium.com'
+        }
+    )
+}
+
+function Invoke-AskSageSearch {
+    param(
+        [Parameter(Mandatory)][string]$Keyword,
+        [Parameter(Mandatory)][hashtable]$Category,
+        [Parameter(Mandatory)][hashtable]$GenAIConfig,
+        [int]$DaysBack = 30
+    )
+
+    $token = Get-EnvVar $GenAIConfig.tokenEnvVar
+    if (-not $token) { return @() }
+
+    $isOpenAI = $GenAIConfig.apiType -eq 'openai-compatible'
+
+    if ($isOpenAI) {
+        $headers = @{ 'Authorization' = "Bearer $token" }
+    } else {
+        $headers = @{ 'x-access-tokens' = $token }
+    }
+
+    $prompt = @"
+You are an AU-13 compliance web search tool. Search the web for unauthorized disclosure of information related to "$Keyword" on $($Category.Label) ($($Category.Sites)).
+
+Focus on: leaked credentials, API keys, source code, sensitive documents, data breaches, and security incidents from the last $DaysBack days.
+
+For EACH finding, return this EXACT JSON format (no other text before or after the JSON):
+```json
+[
+  {
+    "url": "https://exact-url-here",
+    "title": "Brief title of the finding",
+    "severity": "Critical|High|Medium|Review",
+    "snippet": "1-2 sentence description of what was found"
+  }
+]
+```
+
+Rules:
+- Only include REAL findings with REAL URLs. Do not hallucinate.
+- severity: Critical = active credential/data exposure, High = sensitive code/docs exposed, Medium = mentions of potential exposure, Review = general references
+- If no results found, return exactly: []
+- Search specifically on: $($Category.Sites)
+"@
+
+    if ($isOpenAI) {
+        $body = @{
+            model       = $GenAIConfig.model
+            messages    = @(
+                @{ role = 'system'; content = 'You are a web search tool for AU-13 compliance. Return only JSON arrays of findings.' }
+                @{ role = 'user';   content = $prompt }
+            )
+            temperature = 0.3
+        } | ConvertTo-Json -Depth 4
+    } else {
+        $body = @{
+            message          = $prompt
+            persona          = $GenAIConfig.persona
+            model            = $GenAIConfig.model
+            temperature      = 0.3
+            limit_references = $GenAIConfig.limit_references
+            live             = $GenAIConfig.live
+        } | ConvertTo-Json -Depth 3
+    }
+
+    try {
+        Write-Host "  [AskSage] Searching $($Category.Label) for '$Keyword'..." -ForegroundColor Cyan
+        $response = Invoke-RestMethodWithRetry -RequestParams @{
+            Uri         = $GenAIConfig.endpoint
+            Method      = 'Post'
+            Headers     = $headers
+            Body        = [System.Text.Encoding]::UTF8.GetBytes($body)
+            ContentType = 'application/json; charset=utf-8'
+            TimeoutSec  = 300
+            ErrorAction = 'Stop'
+        } -MaxRetries 2 -BaseDelaySeconds 3
+
+        Start-Sleep -Seconds 2
+
+        # Extract message text
+        $messageText = $null
+        if ($isOpenAI) {
+            if ($response.choices -and $response.choices.Count -gt 0) {
+                $messageText = $response.choices[0].message.content
+            }
+        } else {
+            $messageText = $response.message
+        }
+
+        if (-not $messageText) { return @() }
+
+        # Parse JSON from response (handle markdown code blocks)
+        $jsonText = $messageText
+        if ($jsonText -match '(?s)```(?:json)?\s*(\[[\s\S]*?\])\s*```') {
+            $jsonText = $Matches[1]
+        } elseif ($jsonText -match '(?s)(\[[\s\S]*\])') {
+            $jsonText = $Matches[1]
+        } else {
+            # No JSON array found — try to extract URLs from plain text
+            $results = @()
+            $urlMatches = [regex]::Matches($messageText, 'https?://[^\s\)\"<>]+')
+            foreach ($m in $urlMatches) {
+                $results += New-AU13Result `
+                    -Source "AskSage-$($Category.Label)" `
+                    -Keyword $Keyword `
+                    -Title "AI-discovered finding" `
+                    -Url $m.Value `
+                    -Snippet "Found by AskSage live search on $($Category.Label)" `
+                    -Severity 'Review'
+            }
+            if ($results.Count -gt 0) {
+                Write-Host "    Found $($results.Count) result(s) (text-parsed)" -ForegroundColor Gray
+            }
+            return $results
+        }
+
+        # Parse the JSON array
+        try {
+            $findings = $jsonText | ConvertFrom-Json
+        } catch {
+            Write-Host "    Failed to parse JSON response" -ForegroundColor Yellow
+            return @()
+        }
+
+        if (-not $findings -or $findings.Count -eq 0) { return @() }
+
+        $results = @()
+        foreach ($f in $findings) {
+            if (-not $f.url -or $f.url -notmatch '^https?://') { continue }
+            $sev = switch ($f.severity) {
+                'Critical' { 'Critical' }
+                'High'     { 'High' }
+                'Medium'   { 'Medium' }
+                default    { 'Review' }
+            }
+            $results += New-AU13Result `
+                -Source "AskSage-$($Category.Label)" `
+                -Keyword $Keyword `
+                -Title $(if ($f.title) { $f.title } else { 'AI-discovered finding' }) `
+                -Url $f.url `
+                -Snippet $(if ($f.snippet) { $f.snippet } else { "Found on $($Category.Label)" }) `
+                -Severity $sev
+        }
+
+        Write-Host "    Found $($results.Count) result(s)" -ForegroundColor $(if ($results.Count -gt 0) { 'Green' } else { 'Gray' })
+        return $results
+    }
+    catch {
+        Write-Warning "  [AskSage] Search error for $($Category.Label)/$Keyword : $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Search-WithAskSage {
+    param(
+        [Parameter(Mandatory)][string[]]$Keywords,
+        [int]$DaysBack = 30,
+        [Parameter(Mandatory)][hashtable]$GenAIConfig
+    )
+
+    $categories = Get-AskSageSearchCategories
+    $allResults = @()
+
+    foreach ($kw in $Keywords) {
+        Write-Host "[AskSage] Searching for '$kw' across $($categories.Count) categories..." -ForegroundColor White
+        foreach ($cat in $categories) {
+            $catResults = Invoke-AskSageSearch -Keyword $kw -Category $cat -GenAIConfig $GenAIConfig -DaysBack $DaysBack
+            $allResults += $catResults
+            Start-Sleep -Seconds 1
+        }
+    }
+
+    Write-Host "[AskSage] Total: $($allResults.Count) results found" -ForegroundColor Cyan
+    return $allResults
+}
+
+# ============================================================================
+# WEB UI SERVER
+# ============================================================================
+
+function Get-WebUIHtml {
+    return @'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Look4Gold13 - AU-13 Compliance Scanner</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f172a;--card:#1e293b;--border:#334155;--accent:#3b82f6;--accent2:#8b5cf6;--danger:#ef4444;--warn:#f59e0b;--success:#22c55e;--text:#f1f5f9;--muted:#94a3b8;--dim:#475569}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.container{max-width:1200px;margin:0 auto;padding:24px}
+.header{text-align:center;padding:32px 0;border-bottom:1px solid var(--border);margin-bottom:24px}
+.header h1{font-size:2rem;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.header p{color:var(--muted);margin-top:8px;font-size:0.95rem}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;margin-bottom:20px}
+.card h2{font-size:1.15rem;margin-bottom:16px;color:var(--text);display:flex;align-items:center;gap:8px}
+.badge{display:inline-block;padding:2px 10px;border-radius:9999px;font-size:0.75rem;font-weight:600}
+.badge-blue{background:#1e3a5f;color:#60a5fa}
+.badge-green{background:#14532d;color:#4ade80}
+.badge-yellow{background:#422006;color:#fbbf24}
+.config-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
+.config-item{background:var(--bg);padding:12px 16px;border-radius:8px;border:1px solid var(--border)}
+.config-item label{font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em}
+.config-item .value{font-size:1rem;margin-top:4px;font-weight:500}
+.btn{padding:10px 24px;border:none;border-radius:8px;font-size:0.9rem;font-weight:600;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:#2563eb}
+.btn-primary:disabled{background:var(--dim);cursor:not-allowed}
+.btn-success{background:var(--success);color:#fff}
+.btn-success:hover{background:#16a34a}
+.btn-danger{background:var(--danger);color:#fff}
+.btn-row{display:flex;gap:12px;flex-wrap:wrap}
+.progress-outer{background:var(--bg);border-radius:8px;height:28px;overflow:hidden;margin:12px 0;border:1px solid var(--border)}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width 0.5s ease;display:flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:600;min-width:40px}
+.progress-text{color:var(--muted);font-size:0.85rem;margin-top:4px}
+.results-table{width:100%;border-collapse:collapse;font-size:0.85rem}
+.results-table th{text-align:left;padding:10px 12px;background:var(--bg);color:var(--muted);font-weight:600;text-transform:uppercase;font-size:0.7rem;letter-spacing:0.05em;border-bottom:1px solid var(--border)}
+.results-table td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+.results-table tr:hover{background:rgba(59,130,246,0.05)}
+.results-table a{color:var(--accent);text-decoration:none;word-break:break-all}
+.results-table a:hover{text-decoration:underline}
+.sev{padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600;text-transform:uppercase}
+.sev-critical{background:#7f1d1d;color:#fca5a5}
+.sev-high{background:#78350f;color:#fbbf24}
+.sev-medium{background:#713f12;color:#fde68a}
+.sev-review{background:#1e3a5f;color:#93c5fd}
+.ai-summary{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;line-height:1.6;font-size:0.9rem}
+.ai-summary h3{color:var(--accent);margin-bottom:8px}
+.ai-summary h4{color:var(--muted);margin:12px 0 4px}
+.ai-summary ul{padding-left:20px;margin:4px 0}
+.ai-summary li{margin:4px 0}
+.ai-summary a{color:var(--accent)}
+.log-area{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;max-height:200px;overflow-y:auto;font-family:'Cascadia Code','Fira Code',monospace;font-size:0.8rem;color:var(--muted);line-height:1.5}
+.empty-state{text-align:center;padding:40px;color:var(--dim)}
+.hidden{display:none!important}
+.kw-tag{display:inline-block;background:var(--bg);border:1px solid var(--border);padding:4px 12px;border-radius:6px;margin:2px 4px;font-size:0.85rem}
+.stats-row{display:flex;gap:16px;flex-wrap:wrap;margin-top:12px}
+.stat{background:var(--bg);padding:8px 16px;border-radius:8px;border:1px solid var(--border);text-align:center;min-width:80px}
+.stat .num{font-size:1.5rem;font-weight:700}
+.stat .lbl{font-size:0.7rem;color:var(--muted);text-transform:uppercase}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Look4Gold13</h1>
+    <p>NIST SP 800-53 AU-13 Compliance Scanner &mdash; Unauthorized Disclosure Monitoring</p>
+  </div>
+
+  <div class="card" id="config-card">
+    <h2>Scan Configuration</h2>
+    <div class="config-grid" id="config-grid"></div>
+    <div style="margin-top:12px">
+      <strong style="font-size:0.8rem;color:var(--muted)">KEYWORDS</strong>
+      <div id="keywords-display" style="margin-top:6px"></div>
+    </div>
+    <div class="btn-row" style="margin-top:20px">
+      <button class="btn btn-primary" id="btn-scan" onclick="startScan()">Start Scan</button>
+      <button class="btn btn-danger hidden" id="btn-stop" onclick="stopScan()">Stop</button>
+    </div>
+  </div>
+
+  <div class="card hidden" id="progress-card">
+    <h2>Scan Progress</h2>
+    <div class="progress-outer"><div class="progress-fill" id="progress-fill" style="width:0%">0%</div></div>
+    <div class="progress-text" id="progress-text">Initializing...</div>
+    <div class="log-area" id="log-area"></div>
+  </div>
+
+  <div class="card hidden" id="results-card">
+    <h2>Findings <span class="badge badge-blue" id="result-count">0</span></h2>
+    <div class="stats-row" id="stats-row"></div>
+    <div style="overflow-x:auto;margin-top:16px">
+      <table class="results-table">
+        <thead><tr><th>Severity</th><th>Source</th><th>Keyword</th><th>Title</th><th>URL</th></tr></thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="no-results">No findings yet. Start a scan to begin searching.</div>
+  </div>
+
+  <div class="card hidden" id="summary-card">
+    <h2>AI Analysis</h2>
+    <div id="ai-summaries"></div>
+  </div>
+
+  <div class="card hidden" id="report-card">
+    <h2>Report</h2>
+    <div class="btn-row">
+      <button class="btn btn-success" onclick="generateReport()">Generate HTML Report</button>
+    </div>
+    <p id="report-status" style="margin-top:12px;color:var(--muted);font-size:0.85rem"></p>
+  </div>
+</div>
+<script>
+let config={},allResults=[],scanning=false,stopped=false;
+async function loadConfig(){
+  try{const r=await fetch('/api/config');config=await r.json();renderConfig()}
+  catch(e){log('Failed to load config: '+e.message)}
+}
+function renderConfig(){
+  const g=document.getElementById('config-grid');
+  g.innerHTML=[
+    {l:'Days Back',v:config.daysBack},
+    {l:'Categories',v:config.categories?.length||0},
+    {l:'Search Engine',v:'AskSage (Live)'},
+    {l:'AI Model',v:config.model||'N/A'}
+  ].map(i=>`<div class="config-item"><label>${i.l}</label><div class="value">${i.v}</div></div>`).join('');
+  const kd=document.getElementById('keywords-display');
+  kd.innerHTML=(config.keywords||[]).map(k=>`<span class="kw-tag">${esc(k)}</span>`).join('');
+}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function log(msg){
+  const la=document.getElementById('log-area');
+  const t=new Date().toLocaleTimeString();
+  la.innerHTML+=`<div>[${t}] ${esc(msg)}</div>`;
+  la.scrollTop=la.scrollHeight;
+}
+function show(id){document.getElementById(id).classList.remove('hidden')}
+function hide(id){document.getElementById(id).classList.add('hidden')}
+function updateProgress(done,total,text){
+  const pct=total>0?Math.round((done/total)*100):0;
+  const pf=document.getElementById('progress-fill');
+  pf.style.width=pct+'%';pf.textContent=pct+'%';
+  document.getElementById('progress-text').textContent=text;
+}
+function renderResults(){
+  const tb=document.getElementById('results-body');
+  const nr=document.getElementById('no-results');
+  document.getElementById('result-count').textContent=allResults.length;
+  if(allResults.length===0){nr.style.display='block';tb.innerHTML='';return}
+  nr.style.display='none';
+  tb.innerHTML=allResults.map(r=>{
+    const sc=r.Severity.toLowerCase();
+    return`<tr><td><span class="sev sev-${sc}">${esc(r.Severity)}</span></td><td>${esc(r.Source)}</td><td>${esc(r.Keyword)}</td><td>${esc(r.Title)}</td><td><a href="${esc(r.Url)}" target="_blank" rel="noopener">${esc(r.Url)}</a></td></tr>`;
+  }).join('');
+  const sev={Critical:0,High:0,Medium:0,Review:0};
+  allResults.forEach(r=>{sev[r.Severity]=(sev[r.Severity]||0)+1});
+  document.getElementById('stats-row').innerHTML=Object.entries(sev).filter(([,v])=>v>0).map(([k,v])=>`<div class="stat"><div class="num">${v}</div><div class="lbl">${k}</div></div>`).join('');
+}
+function renderMarkdown(md){
+  if(!md)return'';
+  return md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/^### (.+)$/gm,'<h4>$1</h4>')
+    .replace(/^## (.+)$/gm,'<h3>$1</h3>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/^- (.+)$/gm,'<li>$1</li>')
+    .replace(/(<li>.*<\/li>)/gs,'<ul>$1</ul>')
+    .replace(/(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank">$1</a>')
+    .replace(/\n/g,'<br>');
+}
+async function startScan(){
+  if(scanning)return;scanning=true;stopped=false;
+  allResults=[];
+  document.getElementById('btn-scan').disabled=true;
+  show('btn-stop');show('progress-card');show('results-card');
+  document.getElementById('log-area').innerHTML='';
+  document.getElementById('ai-summaries').innerHTML='';
+  hide('summary-card');hide('report-card');
+  renderResults();
+  const cats=config.categories||[];
+  const kws=config.keywords||[];
+  const total=kws.length*cats.length;
+  let done=0;
+  log('Starting scan: '+kws.length+' keywords x '+cats.length+' categories = '+total+' searches');
+  for(const kw of kws){
+    if(stopped)break;
+    for(const cat of cats){
+      if(stopped)break;
+      updateProgress(done,total,`Searching ${cat.Label} for "${kw}"...`);
+      log(`Searching ${cat.Label} for "${kw}"...`);
+      try{
+        const r=await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keyword:kw,categoryId:cat.Id})});
+        if(!r.ok){log('Search error: HTTP '+r.status);done++;continue}
+        const res=await r.json();
+        if(res&&res.length>0){allResults.push(...res);log(`  Found ${res.length} result(s)`);renderResults()}
+        else{log('  No results')}
+      }catch(e){log('  Error: '+e.message)}
+      done++;
+    }
+  }
+  if(!stopped){
+    updateProgress(total,total,'Search complete. Running AI analysis...');
+    log('Running AI analysis for each keyword...');
+    show('summary-card');
+    for(const kw of kws){
+      if(stopped)break;
+      log(`Analyzing "${kw}"...`);
+      try{
+        const r=await fetch('/api/summarize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keyword:kw})});
+        const s=await r.json();
+        if(s&&s.Message){
+          const d=document.createElement('div');d.className='ai-summary';
+          d.innerHTML=`<h3>${esc(kw)}</h3><div>${renderMarkdown(s.Message)}</div>`;
+          document.getElementById('ai-summaries').appendChild(d);
+          if(s.References&&s.References.length>0){
+            s.References.forEach(ref=>{
+              const url=typeof ref==='string'?ref:(ref.url||ref.source||'');
+              if(url&&url.match(/^https?:\/\//)){
+                allResults.push({Source:'GenAI-Live',Keyword:kw,Title:ref.title||'AI reference',Url:url,Snippet:'Found by AI analysis',Severity:'Review'});
+              }
+            });
+            renderResults();
+          }
+          log(`  Analysis complete for "${kw}"`);
+        }
+      }catch(e){log('  Analysis error: '+e.message)}
+    }
+    updateProgress(total,total,'Scan complete!');
+    log('Scan complete. '+allResults.length+' total findings.');
+    show('report-card');
+  }else{
+    updateProgress(done,total,'Scan stopped by user.');
+    log('Scan stopped.');
+    if(allResults.length>0)show('report-card');
+  }
+  scanning=false;
+  document.getElementById('btn-scan').disabled=false;
+  hide('btn-stop');
+}
+function stopScan(){stopped=true;log('Stopping scan...')}
+async function generateReport(){
+  const rs=document.getElementById('report-status');
+  rs.textContent='Generating report...';
+  try{
+    const r=await fetch('/api/report',{method:'POST'});
+    const res=await r.json();
+    if(res.path){rs.innerHTML='Report saved: <strong>'+esc(res.path)+'</strong>'}
+    else{rs.textContent='Report generation failed'}
+  }catch(e){rs.textContent='Error: '+e.message}
+}
+loadConfig();
+</script>
+</body>
+</html>
+'@
+}
+
+function Start-AU13WebServer {
+    param(
+        [hashtable]$Config,
+        [hashtable]$SourcesConfig,
+        [string[]]$Keywords,
+        [int]$DaysBack,
+        [string]$OutputFile
+    )
+
+    # Find an available port
+    $tcpListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $tcpListener.Start()
+    $port = $tcpListener.LocalEndpoint.Port
+    $tcpListener.Stop()
+
+    $prefix = "http://localhost:$port/"
+    $httpListener = New-Object System.Net.HttpListener
+    $httpListener.Prefixes.Add($prefix)
+    $httpListener.Start()
+
+    Write-Host ""
+    Write-Host "  Look4Gold13 Web UI running at: $prefix" -ForegroundColor Green
+    Write-Host "  Press Ctrl+C to stop the server." -ForegroundColor Gray
+    Write-Host ""
+
+    # Open default browser
+    Start-Process $prefix
+
+    $allResults = [System.Collections.ArrayList]::new()
+    $aiSummaries = @{}
+    $categories = Get-AskSageSearchCategories
+
+    try {
+        while ($httpListener.IsListening) {
+            $context = $httpListener.GetContext()
+            $request = $context.Request
+            $response = $context.Response
+
+            $path = $request.Url.LocalPath
+            $method = $request.HttpMethod
+
+            try {
+                switch -Regex ("$method $path") {
+                    '^GET /$' {
+                        $html = Get-WebUIHtml
+                        $buffer = [System.Text.Encoding]::UTF8.GetBytes($html)
+                        $response.ContentType = 'text/html; charset=utf-8'
+                        $response.ContentLength64 = $buffer.Length
+                        $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                    }
+                    '^GET /api/config$' {
+                        $json = @{
+                            keywords   = $Keywords
+                            daysBack   = $DaysBack
+                            categories = $categories
+                            model      = $Config.genai.model
+                        } | ConvertTo-Json -Depth 4
+                        Send-WebResponse -Response $response -Json $json
+                    }
+                    '^POST /api/search$' {
+                        $bodyText = Read-WebRequestBody -Request $request
+                        $params = $bodyText | ConvertFrom-Json
+                        $cat = $categories | Where-Object { $_.Id -eq $params.categoryId } | Select-Object -First 1
+                        if (-not $cat) {
+                            Send-WebResponse -Response $response -Json '[]'
+                        } else {
+                            $results = Invoke-AskSageSearch -Keyword $params.keyword -Category $cat -GenAIConfig $Config.genai -DaysBack $DaysBack
+                            foreach ($r in $results) { [void]$allResults.Add($r) }
+                            $resultsJson = @($results) | ForEach-Object {
+                                @{
+                                    Source   = $_.Source
+                                    Keyword  = $_.Keyword
+                                    Title    = $_.Title
+                                    Url      = $_.Url
+                                    Snippet  = $_.Snippet
+                                    Severity = $_.Severity
+                                }
+                            }
+                            Send-WebResponse -Response $response -Json (ConvertTo-Json @($resultsJson) -Depth 3)
+                        }
+                    }
+                    '^POST /api/summarize$' {
+                        $bodyText = Read-WebRequestBody -Request $request
+                        $params = $bodyText | ConvertFrom-Json
+                        $kwResults = @($allResults | Where-Object { $_.Keyword -eq $params.keyword })
+                        $summary = Invoke-GenAISummary -Keyword $params.keyword -Results $kwResults -GenAIConfig $Config.genai
+                        $aiSummaries[$params.keyword] = $summary
+
+                        # Add references as results
+                        if ($summary -is [hashtable] -and $summary.References -and $summary.References.Count -gt 0) {
+                            foreach ($ref in $summary.References) {
+                                $refUrl = ''
+                                $refTitle = 'AI-discovered source'
+                                if ($ref -is [string] -and $ref -match '^https?://') { $refUrl = $ref }
+                                elseif ($ref.url) { $refUrl = $ref.url; if ($ref.title) { $refTitle = $ref.title } }
+                                elseif ($ref.source) { $refUrl = $ref.source }
+                                if ($refUrl) {
+                                    [void]$allResults.Add((New-AU13Result -Source 'GenAI-Live' -Keyword $params.keyword -Title $refTitle -Url $refUrl -Snippet "Found by AI analysis" -Severity 'Review'))
+                                }
+                            }
+                        }
+
+                        $summaryJson = @{
+                            Message    = $summary.Message
+                            References = @($summary.References)
+                        } | ConvertTo-Json -Depth 3
+                        Send-WebResponse -Response $response -Json $summaryJson
+                    }
+                    '^POST /api/report$' {
+                        $reportPath = Export-AU13Html -Results @($allResults) -OutputPath $OutputFile -Keywords $Keywords -DaysBack $DaysBack -Sources @('AskSage') -AISummaries $aiSummaries
+                        Send-WebResponse -Response $response -Json (@{ path = $reportPath } | ConvertTo-Json)
+                    }
+                    '^POST /api/stop$' {
+                        Send-WebResponse -Response $response -Json '{"status":"stopped"}'
+                        $response.Close()
+                        $httpListener.Stop()
+                        return
+                    }
+                    default {
+                        $response.StatusCode = 404
+                        $buffer = [System.Text.Encoding]::UTF8.GetBytes('{"error":"Not found"}')
+                        $response.ContentType = 'application/json'
+                        $response.ContentLength64 = $buffer.Length
+                        $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                    }
+                }
+            }
+            catch {
+                Write-Warning "[WebUI] Request error: $($_.Exception.Message)"
+                try {
+                    $errJson = @{ error = $_.Exception.Message } | ConvertTo-Json
+                    $buffer = [System.Text.Encoding]::UTF8.GetBytes($errJson)
+                    $response.StatusCode = 500
+                    $response.ContentType = 'application/json'
+                    $response.ContentLength64 = $buffer.Length
+                    $response.OutputStream.Write($buffer, 0, $buffer.Length)
+                } catch {}
+            }
+            finally {
+                try { $response.Close() } catch {}
+            }
+        }
+    }
+    finally {
+        try { $httpListener.Close() } catch {}
+        Write-Host "[WebUI] Server stopped." -ForegroundColor Yellow
+    }
+}
+
+function Send-WebResponse {
+    param(
+        [System.Net.HttpListenerResponse]$Response,
+        [string]$Json
+    )
+    $buffer = [System.Text.Encoding]::UTF8.GetBytes($Json)
+    $Response.ContentType = 'application/json; charset=utf-8'
+    $Response.ContentLength64 = $buffer.Length
+    $Response.Headers.Add('Cache-Control', 'no-cache')
+    $Response.OutputStream.Write($buffer, 0, $buffer.Length)
+}
+
+function Read-WebRequestBody {
+    param([System.Net.HttpListenerRequest]$Request)
+    $reader = New-Object System.IO.StreamReader($Request.InputStream, $Request.ContentEncoding)
+    $body = $reader.ReadToEnd()
+    $reader.Close()
+    return $body
+}
+
+# ============================================================================
 # HTML REPORT EXPORT
 # ============================================================================
 
@@ -1438,19 +2103,58 @@ $genaiStatus = if (Get-EnvVar $config.genai.tokenEnvVar) {
     "Enabled - $apiName"
 } else { 'Disabled (no token)' }
 Write-Host "  GenAI:     $genaiStatus" -ForegroundColor Gray
+Write-Host "  Mode:      $(if ($WebUI) { 'Web UI' } else { 'CLI' })" -ForegroundColor Gray
 Write-Host ""
+
+# ============================================================================
+# WEB UI MODE — launches browser-based dashboard
+# ============================================================================
+if ($WebUI) {
+    $genaiToken = Get-EnvVar $config.genai.tokenEnvVar
+    if (-not $genaiToken) {
+        Write-Error "Web UI mode requires a GenAI API token. Set `$env:$($config.genai.tokenEnvVar) or run in interactive mode first."
+        exit 1
+    }
+    Write-Host "Launching Web UI..." -ForegroundColor Cyan
+    Start-AU13WebServer -Config $config -SourcesConfig $sourcesConfig -Keywords $keywords -DaysBack $DaysBack -OutputFile $OutputFile
+    exit 0
+}
+
+# ============================================================================
+# CLI MODE — traditional command-line scan
+# ============================================================================
 
 $allResults = @()
 
-# Shared CAPTCHA state across all DDG-based searches — if DuckDuckGo scanning
-# triggers CAPTCHA, the escalated delay carries over to BreachInfo queries.
-$captchaState = @{ HitCount = 0; CurrentDelay = $config.search.delaySeconds; Blocked = $false }
-
-# Shared web session — persists cookies across all searches (esp. Menlo Security session cookies)
-$webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
-
-# Warm up session through Menlo proxy to pre-establish cookies before search queries
+# If on government network (proxy), use AskSage for searching instead of DDG
+$useAskSageSearch = $false
 if ($proxyBase) {
+    $genaiToken = Get-EnvVar $config.genai.tokenEnvVar
+    if ($genaiToken) {
+        $useAskSageSearch = $true
+        Write-Host "[Gov Network] Web scraping unavailable through Menlo Security." -ForegroundColor Yellow
+        Write-Host "[Gov Network] Using AskSage API for web searches instead." -ForegroundColor Green
+        Write-Host ""
+    }
+}
+
+if ($useAskSageSearch) {
+    # --- AskSage-powered search (government network) ---
+    Write-Host "=== Scanning via AskSage Live Search... ===" -ForegroundColor White
+    $askSageResults = Search-WithAskSage -Keywords $keywords -DaysBack $DaysBack -GenAIConfig $config.genai
+    $allResults += $askSageResults
+    Write-Host ""
+} else {
+    # --- Traditional DDG/Breach scraping (home/direct network) ---
+
+    # Shared CAPTCHA state across all DDG-based searches
+    $captchaState = @{ HitCount = 0; CurrentDelay = $config.search.delaySeconds; Blocked = $false }
+
+    # Shared web session — persists cookies across all searches
+    $webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+
+    # Warm up session through Menlo proxy to pre-establish cookies before search queries
+    if ($proxyBase) {
     Write-Host "[Menlo] Warming up session through proxy..." -ForegroundColor Gray
     try {
         $warmupUrl = Get-ProxiedUrl -Url "https://html.duckduckgo.com/html/" -ProxyBase $proxyBase
@@ -1512,6 +2216,8 @@ if ('Breach' -in $Sources) {
     Write-Host ""
 }
 
+} # end else (traditional DDG/Breach scraping)
+
 # --- Cross-source deduplication (keep highest severity per keyword+URL) ---
 $sevRank = @{ 'Critical' = 4; 'High' = 3; 'Medium' = 2; 'Review' = 1; 'Manual-Review' = 0 }
 $dedupMap = @{}
@@ -1536,7 +2242,7 @@ Write-Host "=== Scan Complete ===" -ForegroundColor Green
 Write-Host ""
 
 if ($allResults.Count -eq 0) {
-    Write-Host "No results found from DDG scans. GenAI will search independently." -ForegroundColor Yellow
+    Write-Host "No results found from web scans. GenAI will search independently." -ForegroundColor Yellow
 }
 else {
     # Print summary by severity
