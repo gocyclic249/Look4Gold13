@@ -15,9 +15,9 @@
     CAPTCHAs), automatically uses AskSage API for live web searches instead.
 
     Three modes:
-      Interactive (default) - prompts for all settings
-      Silent (-Silent)      - uses flags and defaults, no prompts
-      Web UI (-WebUI)       - browser-based dashboard at localhost
+      Web UI (default)     - browser-based dashboard at localhost (when GenAI token available)
+      Interactive          - prompts for all settings (when no GenAI token)
+      Silent (-Silent)     - uses flags and defaults, no prompts
 .EXAMPLE
     .\Look4Gold13.ps1
     # Interactive mode - prompts for everything
@@ -1318,7 +1318,17 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
 .log-area{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;max-height:200px;overflow-y:auto;font-family:'Cascadia Code','Fira Code',monospace;font-size:0.8rem;color:var(--muted);line-height:1.5}
 .empty-state{text-align:center;padding:40px;color:var(--dim)}
 .hidden{display:none!important}
-.kw-tag{display:inline-block;background:var(--bg);border:1px solid var(--border);padding:4px 12px;border-radius:6px;margin:2px 4px;font-size:0.85rem}
+.kw-tag{display:inline-flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border);padding:4px 12px;border-radius:6px;margin:2px 4px;font-size:0.85rem}
+.kw-del{background:none;border:none;color:var(--danger);cursor:pointer;font-size:1rem;padding:0 2px;line-height:1;opacity:0.7}
+.kw-del:hover{opacity:1}
+.kw-input-row{display:flex;gap:8px;margin-top:10px;align-items:center}
+.kw-input-row input{flex:1;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:0.85rem;max-width:300px}
+.kw-input-row input:focus{outline:none;border-color:var(--accent)}
+.btn-sm{padding:6px 14px;font-size:0.8rem}
+.kw-save-status{font-size:0.8rem;margin-left:8px;color:var(--success)}
+.btn-shutdown{background:var(--dim);color:var(--text);padding:8px 16px;border:none;border-radius:8px;font-size:0.8rem;cursor:pointer;margin-top:24px}
+.btn-shutdown:hover{background:var(--danger)}
+.footer{text-align:center;padding:20px 0;border-top:1px solid var(--border);margin-top:24px}
 .stats-row{display:flex;gap:16px;flex-wrap:wrap;margin-top:12px}
 .stat{background:var(--bg);padding:8px 16px;border-radius:8px;border:1px solid var(--border);text-align:center;min-width:80px}
 .stat .num{font-size:1.5rem;font-weight:700}
@@ -1338,6 +1348,12 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
     <div style="margin-top:12px">
       <strong style="font-size:0.8rem;color:var(--muted)">KEYWORDS</strong>
       <div id="keywords-display" style="margin-top:6px"></div>
+      <div class="kw-input-row">
+        <input type="text" id="kw-input" placeholder="Add keyword..." onkeydown="if(event.key==='Enter')addKeyword()">
+        <button class="btn btn-primary btn-sm" onclick="addKeyword()">Add</button>
+        <button class="btn btn-success btn-sm" onclick="saveKeywords()">Save Keywords</button>
+        <span id="kw-save-status" class="kw-save-status"></span>
+      </div>
     </div>
     <div class="btn-row" style="margin-top:20px">
       <button class="btn btn-primary" id="btn-scan" onclick="startScan()">Start Scan</button>
@@ -1376,6 +1392,10 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
     </div>
     <p id="report-status" style="margin-top:12px;color:var(--muted);font-size:0.85rem"></p>
   </div>
+
+  <div class="footer">
+    <button class="btn-shutdown" onclick="shutdownServer()">Shutdown Server</button>
+  </div>
 </div>
 <script>
 let config={},allResults=[],scanning=false,stopped=false;
@@ -1391,8 +1411,40 @@ function renderConfig(){
     {l:'Search Engine',v:'AskSage (Live)'},
     {l:'AI Model',v:config.model||'N/A'}
   ].map(i=>`<div class="config-item"><label>${i.l}</label><div class="value">${i.v}</div></div>`).join('');
+  renderKeywordEditor();
+}
+function renderKeywordEditor(){
   const kd=document.getElementById('keywords-display');
-  kd.innerHTML=(config.keywords||[]).map(k=>`<span class="kw-tag">${esc(k)}</span>`).join('');
+  const kws=config.keywords||[];
+  kd.innerHTML=kws.map((k,i)=>`<span class="kw-tag">${esc(k)}<button class="kw-del" onclick="removeKeyword(${i})" title="Remove">&times;</button></span>`).join('');
+}
+function addKeyword(){
+  const inp=document.getElementById('kw-input');
+  const v=inp.value.trim();
+  if(!v)return;
+  if(!config.keywords)config.keywords=[];
+  if(!config.keywords.includes(v)){config.keywords.push(v);renderKeywordEditor()}
+  inp.value='';inp.focus();
+  document.getElementById('kw-save-status').textContent='(unsaved changes)';
+  document.getElementById('kw-save-status').style.color='var(--warn)';
+}
+function removeKeyword(idx){
+  if(!config.keywords)return;
+  config.keywords.splice(idx,1);
+  renderKeywordEditor();
+  document.getElementById('kw-save-status').textContent='(unsaved changes)';
+  document.getElementById('kw-save-status').style.color='var(--warn)';
+}
+async function saveKeywords(){
+  const st=document.getElementById('kw-save-status');
+  st.textContent='Saving...';st.style.color='var(--muted)';
+  try{
+    const r=await fetch('/api/keywords',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keywords:config.keywords||[]})});
+    const res=await r.json();
+    if(res.saved){st.textContent='Saved!';st.style.color='var(--success)';config.keywords=res.keywords}
+    else{st.textContent='Error: '+(res.error||'unknown');st.style.color='var(--danger)'}
+  }catch(e){st.textContent='Error: '+e.message;st.style.color='var(--danger)'}
+  setTimeout(()=>{st.textContent=''},3000);
 }
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function log(msg){
@@ -1511,9 +1563,17 @@ async function generateReport(){
   try{
     const r=await fetch('/api/report',{method:'POST'});
     const res=await r.json();
-    if(res.path){rs.innerHTML='Report saved: <strong>'+esc(res.path)+'</strong>'}
+    if(res.path){
+      rs.innerHTML='Report saved: <strong>'+esc(res.path)+'</strong><br><span style="color:var(--muted)">Server will shut down in 5 seconds...</span>';
+      setTimeout(async()=>{try{await fetch('/api/stop',{method:'POST'})}catch(e){}},5000);
+    }
     else{rs.textContent='Report generation failed'}
   }catch(e){rs.textContent='Error: '+e.message}
+}
+async function shutdownServer(){
+  if(!confirm('Shut down the Look4Gold13 server?'))return;
+  try{await fetch('/api/stop',{method:'POST'})}catch(e){}
+  document.body.innerHTML='<div style="text-align:center;padding:80px;color:#94a3b8;font-family:system-ui"><h2>Server stopped</h2><p>You can close this tab.</p></div>';
 }
 loadConfig();
 </script>
@@ -1528,7 +1588,8 @@ function Start-AU13WebServer {
         [hashtable]$SourcesConfig,
         [string[]]$Keywords,
         [int]$DaysBack,
-        [string]$OutputFile
+        [string]$OutputFile,
+        [string]$KeywordFilePath
     )
 
     # Find an available port
@@ -1633,6 +1694,18 @@ function Start-AU13WebServer {
                     '^POST /api/report$' {
                         $reportPath = Export-AU13Html -Results @($allResults) -OutputPath $OutputFile -Keywords $Keywords -DaysBack $DaysBack -Sources @('AskSage') -AISummaries $aiSummaries
                         Send-WebResponse -Response $response -Json (@{ path = $reportPath } | ConvertTo-Json)
+                    }
+                    '^POST /api/keywords$' {
+                        $bodyText = Read-WebRequestBody -Request $request
+                        $params = $bodyText | ConvertFrom-Json
+                        $newKeywords = @($params.keywords | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() })
+                        if ($newKeywords.Count -eq 0) {
+                            Send-WebResponse -Response $response -Json '{"error":"No valid keywords provided"}'
+                        } else {
+                            $newKeywords | Set-Content -Path $KeywordFilePath -Encoding UTF8
+                            $Keywords = $newKeywords
+                            Send-WebResponse -Response $response -Json (ConvertTo-Json @{ keywords = $newKeywords; saved = $true })
+                        }
                     }
                     '^POST /api/stop$' {
                         Send-WebResponse -Response $response -Json '{"status":"stopped"}'
@@ -2048,19 +2121,32 @@ elseif (-not $Silent) {
     }
 }
 
+# --- Resolve keyword file path (needed by all modes) ---
+if (-not $KeywordFile) { $KeywordFile = Join-Path $PSScriptRoot "config/keywords.txt" }
+
+# --- Default to Web UI mode when GenAI token is available ---
+if (-not $Silent -and -not $WebUI) {
+    $genaiToken = Get-EnvVar $config.genai.tokenEnvVar
+    if ($genaiToken) {
+        $WebUI = $true
+    }
+}
+
 # --- Resolve remaining parameters ---
 if ($Silent) {
     if (-not $DaysBack)    { $DaysBack = $config.search.daysBack }
     if (-not $Sources)     { $Sources = $config.search.sources }
-    if (-not $KeywordFile) { $KeywordFile = Join-Path $PSScriptRoot "config/keywords.txt" }
+}
+elseif ($WebUI) {
+    # Web UI mode — use defaults, skip interactive prompts
+    if (-not $DaysBack)    { $DaysBack = $config.search.daysBack }
+    if (-not $Sources)     { $Sources = $config.search.sources }
+    if (-not $OutputFile) {
+        $OutputFile = Join-Path (Join-Path $PSScriptRoot "Output") "AU13_Scan_$(Get-Date -Format 'yyyyMMdd_HHmmss').html"
+    }
 }
 else {
-    if (-not $KeywordFile) {
-        $defaultKw = Join-Path $PSScriptRoot "config/keywords.txt"
-        $userInput = Read-Host "Keywords file path [$defaultKw]"
-        $KeywordFile = if ($userInput) { $userInput } else { $defaultKw }
-    }
-
+    # Interactive CLI mode
     if (-not $DaysBack) {
         $userInput = Read-Host "Days back to search [$($config.search.daysBack)]"
         $DaysBack = if ($userInput) { [int]$userInput } else { $config.search.daysBack }
@@ -2116,7 +2202,7 @@ if ($WebUI) {
         exit 1
     }
     Write-Host "Launching Web UI..." -ForegroundColor Cyan
-    Start-AU13WebServer -Config $config -SourcesConfig $sourcesConfig -Keywords $keywords -DaysBack $DaysBack -OutputFile $OutputFile
+    Start-AU13WebServer -Config $config -SourcesConfig $sourcesConfig -Keywords $keywords -DaysBack $DaysBack -OutputFile $OutputFile -KeywordFilePath $KeywordFile
     exit 0
 }
 
