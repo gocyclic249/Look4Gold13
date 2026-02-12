@@ -6,13 +6,18 @@
     Scans multiple sources for unauthorized disclosure of organizational
     information per NIST SP 800-53 AU-13.
 
-    Sources: DuckDuckGo (including paste sites), Breach/Security Blogs, AskSage Live Search
+    Sources: DuckDuckGo (including paste sites), Breach/Security Blogs,
+             NIST NVD CVE Database, AskSage Live Search
 
     After scanning, sends results per keyword to a GenAI API (Ask Sage)
     for summarization. The AI summary is embedded in the HTML report.
 
     On government networks where web scraping is blocked (Menlo Security,
     CAPTCHAs), automatically uses AskSage API for live web searches instead.
+    NIST NVD CVE search works on all networks (direct .gov API access).
+
+    Optional: Set $env:NVD_API_KEY for faster NVD queries (50 req/30s vs 5 req/30s).
+    Get a free key at: https://nvd.nist.gov/developers/request-an-api-key
 
     Three modes:
       Web UI (default)     - browser-based dashboard at localhost (when GenAI token available)
@@ -869,6 +874,121 @@ function Search-BreachInfo {
 }
 
 # ============================================================================
+# NIST NVD CVE SEARCH
+# ============================================================================
+
+function Search-NvdCve {
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Keywords,
+
+        [int]$DaysBack = 30,
+
+        [string]$ApiKey = ''
+    )
+
+    $baseUrl = 'https://services.nvd.nist.gov/rest/json/cves/2.0'
+    $delaySeconds = if ([string]::IsNullOrEmpty($ApiKey)) { 7 } else { 0.8 }
+
+    if ([string]::IsNullOrEmpty($ApiKey)) {
+        Write-Host "[NVD] No API key - using public rate (${delaySeconds}s delay)" -ForegroundColor Gray
+    } else {
+        Write-Host "[NVD] API key detected - using fast rate" -ForegroundColor Green
+    }
+
+    $pubStartDate = (Get-Date).AddDays(-$DaysBack).ToString('yyyy-MM-ddT00:00:00.000')
+    $pubEndDate = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss.000')
+
+    $results = @()
+
+    foreach ($keyword in $Keywords) {
+        Write-Host "[NVD] Searching for '$keyword'..." -ForegroundColor Gray
+        $startIndex = 0
+        $totalResults = 0
+
+        do {
+            $queryParts = @(
+                "keywordSearch=$([System.Uri]::EscapeDataString($keyword))",
+                "resultsPerPage=2000",
+                "startIndex=$startIndex",
+                "pubStartDate=$pubStartDate",
+                "pubEndDate=$pubEndDate"
+            )
+            $uri = $baseUrl + '?' + ($queryParts -join '&')
+
+            $headers = @{}
+            if (-not [string]::IsNullOrEmpty($ApiKey)) {
+                $headers['apiKey'] = $ApiKey
+            }
+
+            try {
+                $requestParams = @{
+                    Uri             = $uri
+                    Method          = 'Get'
+                    ContentType     = 'application/json'
+                    UseBasicParsing = $true
+                }
+                if ($headers.Count -gt 0) {
+                    $requestParams['Headers'] = $headers
+                }
+
+                $response = Invoke-RestMethod @requestParams
+
+                if ($startIndex -eq 0) {
+                    $totalResults = $response.totalResults
+                    Write-Host "[NVD] Found $totalResults CVE(s) for '$keyword'" -ForegroundColor Gray
+                }
+
+                foreach ($vuln in $response.vulnerabilities) {
+                    $cveId = $vuln.cve.id
+                    $description = ($vuln.cve.descriptions | Where-Object { $_.lang -eq 'en' } | Select-Object -First 1).value
+                    if (-not $description) { $description = 'No description available' }
+
+                    # Map CVSS score to severity
+                    $severity = 'Review'
+                    $cvssScore = $null
+                    if ($vuln.cve.metrics.cvssMetricV31) {
+                        $cvssScore = $vuln.cve.metrics.cvssMetricV31[0].cvssData.baseScore
+                    } elseif ($vuln.cve.metrics.cvssMetricV2) {
+                        $cvssScore = $vuln.cve.metrics.cvssMetricV2[0].cvssData.baseScore
+                    }
+                    if ($cvssScore) {
+                        $severity = if ($cvssScore -ge 9.0) { 'Critical' }
+                                    elseif ($cvssScore -ge 7.0) { 'High' }
+                                    elseif ($cvssScore -ge 4.0) { 'Medium' }
+                                    else { 'Review' }
+                    }
+
+                    $truncDesc = if ($description.Length -gt 300) { $description.Substring(0, 300) + '...' } else { $description }
+                    $title = "$cveId$(if ($cvssScore) { " (CVSS: $cvssScore)" } else { '' })"
+
+                    $results += New-AU13Result `
+                        -Source 'NVD-CVE' `
+                        -Keyword $keyword `
+                        -Title $title `
+                        -Url "https://nvd.nist.gov/vuln/detail/$cveId" `
+                        -Snippet $truncDesc `
+                        -Severity $severity
+                }
+
+                $startIndex += $response.vulnerabilities.Count
+            }
+            catch {
+                Write-Warning "[NVD] Error fetching CVEs for '$keyword': $($_.Exception.Message)"
+                break
+            }
+
+            if ($startIndex -lt $totalResults) {
+                Start-Sleep -Seconds $delaySeconds
+            }
+        } while ($startIndex -lt $totalResults)
+    }
+
+    Write-Host "[NVD] Search complete: $($results.Count) CVE(s) found" -ForegroundColor Gray
+    return $results
+}
+
+# ============================================================================
 # GENAI SUMMARIZATION
 # ============================================================================
 
@@ -1405,10 +1525,11 @@ async function loadConfig(){
 }
 function renderConfig(){
   const g=document.getElementById('config-grid');
+  const engineLabel=config.searchMode==='standard'?'DDG + Breach + NVD (Direct)':'AskSage + NVD (Live)';
   g.innerHTML=[
     {l:'Days Back',v:config.daysBack},
-    {l:'Categories',v:config.categories?.length||0},
-    {l:'Search Engine',v:'AskSage (Live)'},
+    {l:'Sources',v:config.categories?.length||0},
+    {l:'Search Engine',v:engineLabel},
     {l:'AI Model',v:config.model||'N/A'}
   ].map(i=>`<div class="config-item"><label>${i.l}</label><div class="value">${i.v}</div></div>`).join('');
   renderKeywordEditor();
@@ -1500,7 +1621,8 @@ async function startScan(){
   const kws=config.keywords||[];
   const total=kws.length*cats.length;
   let done=0;
-  log('Starting scan: '+kws.length+' keywords x '+cats.length+' categories = '+total+' searches');
+  const modeLabel=config.searchMode==='standard'?'Standard (DDG+Breach+NVD)':'AskSage+NVD';
+  log('Starting scan ['+modeLabel+']: '+kws.length+' keywords x '+cats.length+' sources = '+total+' searches');
   for(const kw of kws){
     if(stopped)break;
     for(const cat of cats){
@@ -1589,7 +1711,9 @@ function Start-AU13WebServer {
         [string[]]$Keywords,
         [int]$DaysBack,
         [string]$OutputFile,
-        [string]$KeywordFilePath
+        [string]$KeywordFilePath,
+        [string]$SearchMode = 'asksage',
+        [string]$ProxyBase = ''
     )
 
     # Find an available port
@@ -1603,8 +1727,10 @@ function Start-AU13WebServer {
     $httpListener.Prefixes.Add($prefix)
     $httpListener.Start()
 
+    $modeLabel = if ($SearchMode -eq 'standard') { 'Standard (DDG + Breach + NVD)' } else { 'AskSage + NVD' }
     Write-Host ""
     Write-Host "  Look4Gold13 Web UI running at: $prefix" -ForegroundColor Green
+    Write-Host "  Search mode: $modeLabel" -ForegroundColor Green
     Write-Host "  Press Ctrl+C to stop the server." -ForegroundColor Gray
     Write-Host ""
 
@@ -1613,7 +1739,20 @@ function Start-AU13WebServer {
 
     $allResults = [System.Collections.ArrayList]::new()
     $aiSummaries = @{}
-    $categories = Get-AskSageSearchCategories
+
+    # --- Search mode setup ---
+    if ($SearchMode -eq 'standard') {
+        $categories = @(
+            @{ Id = 'duckduckgo'; Label = 'DuckDuckGo'; Description = 'Web search via DuckDuckGo' },
+            @{ Id = 'breach'; Label = 'Breach Sources'; Description = 'Breach/leak data search' }
+        )
+        $webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+        $captchaState = @{ HitCount = 0; CurrentDelay = $Config.search.delaySeconds; Blocked = $false }
+    } else {
+        $categories = Get-AskSageSearchCategories
+    }
+    # NVD available in all modes
+    $categories += @{ Id = 'nvd'; Label = 'NIST NVD CVEs'; Description = 'NIST National Vulnerability Database' }
 
     try {
         while ($httpListener.IsListening) {
@@ -1639,30 +1778,49 @@ function Start-AU13WebServer {
                             daysBack   = $DaysBack
                             categories = $categories
                             model      = $Config.genai.model
+                            searchMode = $SearchMode
                         } | ConvertTo-Json -Depth 4
                         Send-WebResponse -Response $response -Json $json
                     }
                     '^POST /api/search$' {
                         $bodyText = Read-WebRequestBody -Request $request
                         $params = $bodyText | ConvertFrom-Json
-                        $cat = $categories | Where-Object { $_.Id -eq $params.categoryId } | Select-Object -First 1
-                        if (-not $cat) {
-                            Send-WebResponse -Response $response -Json '[]'
-                        } else {
-                            $results = Invoke-AskSageSearch -Keyword $params.keyword -Category $cat -GenAIConfig $Config.genai -DaysBack $DaysBack
-                            foreach ($r in $results) { [void]$allResults.Add($r) }
-                            $resultsJson = @($results) | ForEach-Object {
-                                @{
-                                    Source   = $_.Source
-                                    Keyword  = $_.Keyword
-                                    Title    = $_.Title
-                                    Url      = $_.Url
-                                    Snippet  = $_.Snippet
-                                    Severity = $_.Severity
-                                }
-                            }
-                            Send-WebResponse -Response $response -Json (ConvertTo-Json @($resultsJson) -Depth 3)
+                        $results = @()
+
+                        if ($params.categoryId -eq 'nvd') {
+                            # NVD CVE search (works in all modes, always direct)
+                            $nvdApiKey = Get-EnvVar 'NVD_API_KEY'
+                            $results = Search-NvdCve -Keywords @($params.keyword) -DaysBack $DaysBack -ApiKey $(if ($nvdApiKey) { $nvdApiKey } else { '' })
                         }
+                        elseif ($SearchMode -eq 'standard') {
+                            # Standard DDG/Breach web scraping
+                            if ($params.categoryId -eq 'duckduckgo') {
+                                $results = Search-DuckDuckGo -Keywords @($params.keyword) -DaysBack $DaysBack -DelaySeconds $Config.search.delaySeconds -ProxyBase $ProxyBase -CaptchaState ([ref]$captchaState) -Dorks $SourcesConfig.ddgDorks -WebSession $webSession
+                            }
+                            elseif ($params.categoryId -eq 'breach') {
+                                $results = Search-BreachInfo -Keywords @($params.keyword) -DaysBack $DaysBack -DelaySeconds $Config.search.delaySeconds -ProxyBase $ProxyBase -CaptchaState ([ref]$captchaState) -BreachDorks $SourcesConfig.breachDorks -WebSession $webSession
+                            }
+                        }
+                        else {
+                            # AskSage mode
+                            $cat = $categories | Where-Object { $_.Id -eq $params.categoryId } | Select-Object -First 1
+                            if ($cat) {
+                                $results = Invoke-AskSageSearch -Keyword $params.keyword -Category $cat -GenAIConfig $Config.genai -DaysBack $DaysBack
+                            }
+                        }
+
+                        foreach ($r in $results) { [void]$allResults.Add($r) }
+                        $resultsJson = @($results) | ForEach-Object {
+                            @{
+                                Source   = $_.Source
+                                Keyword  = $_.Keyword
+                                Title    = $_.Title
+                                Url      = $_.Url
+                                Snippet  = $_.Snippet
+                                Severity = $_.Severity
+                            }
+                        }
+                        Send-WebResponse -Response $response -Json (ConvertTo-Json @($resultsJson) -Depth 3)
                     }
                     '^POST /api/summarize$' {
                         $bodyText = Read-WebRequestBody -Request $request
@@ -1692,7 +1850,8 @@ function Start-AU13WebServer {
                         Send-WebResponse -Response $response -Json $summaryJson
                     }
                     '^POST /api/report$' {
-                        $reportPath = Export-AU13Html -Results @($allResults) -OutputPath $OutputFile -Keywords $Keywords -DaysBack $DaysBack -Sources @('AskSage') -AISummaries $aiSummaries
+                        $reportSources = if ($SearchMode -eq 'standard') { @('DuckDuckGo','Breach','NVD') } else { @('AskSage','NVD') }
+                        $reportPath = Export-AU13Html -Results @($allResults) -OutputPath $OutputFile -Keywords $Keywords -DaysBack $DaysBack -Sources $reportSources -AISummaries $aiSummaries
                         Send-WebResponse -Response $response -Json (@{ path = $reportPath } | ConvertTo-Json)
                     }
                     '^POST /api/keywords$' {
@@ -2196,13 +2355,20 @@ Write-Host ""
 # WEB UI MODE — launches browser-based dashboard
 # ============================================================================
 if ($WebUI) {
-    $genaiToken = Get-EnvVar $config.genai.tokenEnvVar
-    if (-not $genaiToken) {
-        Write-Error "Web UI mode requires a GenAI API token. Set `$env:$($config.genai.tokenEnvVar) or run in interactive mode first."
-        exit 1
+    # Determine search mode: proxy = AskSage (gov network), no proxy = standard DDG/Breach
+    $webSearchMode = if ($proxyBase) { 'asksage' } else { 'standard' }
+
+    if ($webSearchMode -eq 'asksage') {
+        $genaiToken = Get-EnvVar $config.genai.tokenEnvVar
+        if (-not $genaiToken) {
+            Write-Error "Web UI on government network requires a GenAI API token. Set `$env:$($config.genai.tokenEnvVar) or run in interactive mode first."
+            exit 1
+        }
     }
-    Write-Host "Launching Web UI..." -ForegroundColor Cyan
-    Start-AU13WebServer -Config $config -SourcesConfig $sourcesConfig -Keywords $keywords -DaysBack $DaysBack -OutputFile $OutputFile -KeywordFilePath $KeywordFile
+
+    $searchModeLabel = if ($webSearchMode -eq 'asksage') { 'AskSage (gov network via Menlo proxy)' } else { 'Standard (DDG + Breach + NVD direct)' }
+    Write-Host "Launching Web UI... [Search: $searchModeLabel]" -ForegroundColor Cyan
+    Start-AU13WebServer -Config $config -SourcesConfig $sourcesConfig -Keywords $keywords -DaysBack $DaysBack -OutputFile $OutputFile -KeywordFilePath $KeywordFile -SearchMode $webSearchMode -ProxyBase $proxyBase
     exit 0
 }
 
@@ -2303,6 +2469,13 @@ if ('Breach' -in $Sources) {
 }
 
 } # end else (traditional DDG/Breach scraping)
+
+# --- NVD CVE Search (works on all networks, always direct) ---
+Write-Host "=== Searching NIST NVD for CVEs... ===" -ForegroundColor White
+$nvdApiKey = Get-EnvVar 'NVD_API_KEY'
+$nvdResults = Search-NvdCve -Keywords $keywords -DaysBack $DaysBack -ApiKey $(if ($nvdApiKey) { $nvdApiKey } else { '' })
+$allResults += $nvdResults
+Write-Host ""
 
 # --- Cross-source deduplication (keep highest severity per keyword+URL) ---
 $sevRank = @{ 'Critical' = 4; 'High' = 3; 'Medium' = 2; 'Review' = 1; 'Manual-Review' = 0 }
