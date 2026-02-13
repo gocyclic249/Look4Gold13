@@ -4,6 +4,8 @@
 
 # Logs and output
 *.log
+*.xlsx
+*.csv
 /Output/
 /Reports/
 debug_*.html

@@ -18,7 +18,9 @@ param(
     [int]$MinJitter      = 5,       # Min additional random seconds
     [int]$MaxJitter      = 15,      # Max additional random seconds
     [bool]$IncludeBreach = $true,   # Include breach dorks (default: on)
-    [switch]$VerboseOutput          # Extra debug output
+    [switch]$VerboseOutput,         # Extra debug output
+    [string]$OutputFile,            # Custom path for .xlsx export
+    [switch]$NoExport               # Suppress Excel file export
 )
 
 # ============================================================================
@@ -334,6 +336,33 @@ function Group-Dorks {
 }
 
 # ============================================================================
+# SNIPPET DATE EXTRACTION
+# ============================================================================
+
+function Split-SnippetDate {
+    param([string]$Snippet)
+
+    if (-not $Snippet) {
+        return @{ Date = ''; Text = '' }
+    }
+
+    # Pattern 1: "Mar 10, 2025 - ..." or "March 10, 2025 - ..."
+    if ($Snippet -match '^(\w{3,9}\s+\d{1,2},\s+\d{4})\s*[\-\u2013]\s*(.*)$') {
+        return @{ Date = $Matches[1]; Text = $Matches[2].Trim() }
+    }
+    # Pattern 2: "2025-03-10 - ..."
+    if ($Snippet -match '^(\d{4}-\d{2}-\d{2})\s*[\-\u2013]\s*(.*)$') {
+        return @{ Date = $Matches[1]; Text = $Matches[2].Trim() }
+    }
+    # Pattern 3: "10 Mar 2025 - ..."
+    if ($Snippet -match '^(\d{1,2}\s+\w{3,9}\s+\d{4})\s*[\-\u2013]\s*(.*)$') {
+        return @{ Date = $Matches[1]; Text = $Matches[2].Trim() }
+    }
+
+    return @{ Date = ''; Text = $Snippet }
+}
+
+# ============================================================================
 # RESULT PARSING
 # ============================================================================
 
@@ -350,6 +379,28 @@ function Parse-DdgResults {
     if ($Html -match 'too long') {
         Write-Host "  [Query Too Long] DDG rejected query length" -ForegroundColor DarkYellow
         return $results
+    }
+
+    # Build snippet lookup: raw href -> snippet text
+    $snippetLookup = @{}
+    $snippetMatches = [regex]::Matches($Html,
+        '(?s)class="result__a"[^>]*href="([^"]+)"[^>]*>.*?class="result__snippet"[^>]*>(.*?)</(?:a|span)>')
+    foreach ($sm in $snippetMatches) {
+        $rawHref = $sm.Groups[1].Value
+        $rawSnippet = ($sm.Groups[2].Value -replace '<[^>]+>', '').Trim()
+        if ($rawHref -and $rawSnippet) {
+            $snippetLookup[$rawHref] = $rawSnippet
+        }
+    }
+    # Also try reversed attribute order
+    $snippetMatches2 = [regex]::Matches($Html,
+        '(?s)href="([^"]+)"[^>]*class="result__a"[^>]*>.*?class="result__snippet"[^>]*>(.*?)</(?:a|span)>')
+    foreach ($sm in $snippetMatches2) {
+        $rawHref = $sm.Groups[1].Value
+        $rawSnippet = ($sm.Groups[2].Value -replace '<[^>]+>', '').Trim()
+        if ($rawHref -and -not $snippetLookup.ContainsKey($rawHref)) {
+            $snippetLookup[$rawHref] = $rawSnippet
+        }
     }
 
     # Tier 1: DDG native result__a links (handles both attribute orders)
@@ -407,12 +458,25 @@ function Parse-DdgResults {
             }
         }
 
+        # Look up snippet using raw href from match groups
+        $rawSnippet = ''
+        $rawHref = if ($match.Groups[2].Value) { $match.Groups[2].Value }
+                   elseif ($match.Groups[3].Value) { $match.Groups[3].Value }
+                   else { $match.Groups[1].Value }
+        if ($rawHref -and $snippetLookup.ContainsKey($rawHref)) {
+            $rawSnippet = $snippetLookup[$rawHref]
+        }
+
+        $dateSplit = Split-SnippetDate -Snippet $rawSnippet
+
         $results += [PSCustomObject]@{
-            Keyword = $Keyword
-            Title   = $resultTitle
-            Url     = $resultUrl
-            Dork    = $inferredLabel
-            Found   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+            Keyword       = $Keyword
+            Title         = $resultTitle
+            Url           = $resultUrl
+            Dork          = $inferredLabel
+            Found         = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+            Summary       = $dateSplit.Text
+            DatePublished = $dateSplit.Date
         }
     }
 
@@ -543,6 +607,98 @@ function Invoke-DdgSearch {
     }
 
     return @{ Results = $results; CaptchaBlocked = $false }
+}
+
+# ============================================================================
+# EXCEL EXPORT
+# ============================================================================
+
+function Export-ResultsToXlsx {
+    param(
+        [Parameter(Mandatory)][array]$Results,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    # Load WindowsBase for System.IO.Packaging (ships with .NET Framework 3.0+)
+    $null = [Reflection.Assembly]::LoadWithPartialName("WindowsBase")
+
+    $nsSpreadsheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    $nsRelDoc      = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    $ctWorkbook    = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+    $ctWorksheet   = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"
+    $rtOfficeDoc   = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+    $rtWorksheet   = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+
+    # Delete existing file if present
+    if (Test-Path $Path) { Remove-Item $Path -Force }
+
+    $package = [System.IO.Packaging.Package]::Open(
+        $Path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::ReadWrite)
+
+    try {
+        # --- workbook.xml ---
+        $wbUri  = [Uri]::new("/xl/workbook.xml", [UriKind]::Relative)
+        $wbPart = $package.CreatePart($wbUri, $ctWorkbook, [System.IO.Packaging.CompressionOption]::Normal)
+        $package.CreateRelationship($wbUri, [System.IO.Packaging.TargetMode]::Internal, $rtOfficeDoc)
+
+        $wbXml = @"
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="$nsSpreadsheet" xmlns:r="$nsRelDoc">
+  <sheets>
+    <sheet name="Results" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>
+"@
+        $wbStream = $wbPart.GetStream([System.IO.FileMode]::Create)
+        $wbWriter = [System.IO.StreamWriter]::new($wbStream, [System.Text.Encoding]::UTF8)
+        $wbWriter.Write($wbXml)
+        $wbWriter.Flush()
+        $wbWriter.Close()
+
+        # --- sheet1.xml ---
+        $shUri  = [Uri]::new("/xl/worksheets/sheet1.xml", [UriKind]::Relative)
+        $shPart = $package.CreatePart($shUri, $ctWorksheet, [System.IO.Packaging.CompressionOption]::Normal)
+        $wbPart.CreateRelationship($shUri, [System.IO.Packaging.TargetMode]::Internal, $rtWorksheet, "rId1")
+
+        # Build rows with StringBuilder for performance
+        $sb = [System.Text.StringBuilder]::new()
+
+        # Header row
+        $headers = @('Title', 'Date Published', 'Summary', 'Link')
+        $null = $sb.Append('<row>')
+        foreach ($h in $headers) {
+            $escaped = [System.Security.SecurityElement]::Escape($h)
+            $null = $sb.Append("<c t=`"inlineStr`"><is><t>$escaped</t></is></c>")
+        }
+        $null = $sb.AppendLine('</row>')
+
+        # Data rows
+        foreach ($r in $Results) {
+            $cells = @($r.Title, $r.DatePublished, $r.Summary, $r.Url)
+            $null = $sb.Append('<row>')
+            foreach ($val in $cells) {
+                $escaped = [System.Security.SecurityElement]::Escape([string]$val)
+                $null = $sb.Append("<c t=`"inlineStr`"><is><t>$escaped</t></is></c>")
+            }
+            $null = $sb.AppendLine('</row>')
+        }
+
+        $shXml = @"
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="$nsSpreadsheet">
+  <sheetData>
+$($sb.ToString())  </sheetData>
+</worksheet>
+"@
+        $shStream = $shPart.GetStream([System.IO.FileMode]::Create)
+        $shWriter = [System.IO.StreamWriter]::new($shStream, [System.Text.Encoding]::UTF8)
+        $shWriter.Write($shXml)
+        $shWriter.Flush()
+        $shWriter.Close()
+
+    } finally {
+        $package.Close()
+    }
 }
 
 # ============================================================================
@@ -697,11 +853,40 @@ if ($allResults.Count -gt 0) {
         foreach ($r in $kwResults) {
             Write-Host "    [$($r.Dork)] $($r.Title)" -ForegroundColor Gray
             Write-Host "      $($r.Url)" -ForegroundColor DarkCyan
+            if ($r.Summary) {
+                $preview = if ($r.Summary.Length -gt 100) { $r.Summary.Substring(0, 100) + '...' } else { $r.Summary }
+                Write-Host "      $preview" -ForegroundColor DarkGray
+            }
         }
         Write-Host ""
     }
 } else {
     Write-Host "[No results found]" -ForegroundColor DarkYellow
+    Write-Host ""
+}
+
+# Export results to Excel
+if ($allResults.Count -gt 0 -and -not $NoExport) {
+    if (-not $OutputFile) {
+        $timestamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
+        $OutputFile = Join-Path $PSScriptRoot "Look4Gold13_Results_$timestamp.xlsx"
+    }
+    if ($OutputFile -notmatch '\.xlsx$') {
+        $OutputFile += '.xlsx'
+    }
+
+    try {
+        Export-ResultsToXlsx -Results $allResults -Path $OutputFile
+        Write-Host "[Excel export] $($allResults.Count) results saved to:" -ForegroundColor Cyan
+        Write-Host "  $OutputFile" -ForegroundColor White
+    } catch {
+        Write-Host "[Excel export] FAILED: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "[Fallback] Saving as CSV..." -ForegroundColor Yellow
+        $csvPath = $OutputFile -replace '\.xlsx$', '.csv'
+        $allResults | Select-Object Title, DatePublished, Summary, Url |
+            Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+        Write-Host "  CSV saved to: $csvPath" -ForegroundColor White
+    }
     Write-Host ""
 }
 
