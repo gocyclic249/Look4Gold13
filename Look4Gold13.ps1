@@ -9,7 +9,7 @@
 .EXAMPLE
     .\Look4Gold13.ps1 -MaxDorks 4
     .\Look4Gold13.ps1 -MaxDorks 1 -BaseDelay 90
-    .\Look4Gold13.ps1 -IncludeBreach
+    .\Look4Gold13.ps1 -IncludeBreach:$false
 #>
 param(
     [string]$KeywordFile,
@@ -17,7 +17,7 @@ param(
     [int]$BaseDelay      = 60,      # Base seconds between requests
     [int]$MinJitter      = 5,       # Min additional random seconds
     [int]$MaxJitter      = 15,      # Max additional random seconds
-    [switch]$IncludeBreach,         # Also run breach dorks
+    [bool]$IncludeBreach = $true,   # Include breach dorks (default: on)
     [switch]$VerboseOutput          # Extra debug output
 )
 

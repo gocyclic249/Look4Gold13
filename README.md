@@ -11,14 +11,14 @@ Automates DuckDuckGo dorking across paste sites, code repos, and breach database
 Copy-Item config/keywords.example.txt config/keywords.txt
 # Edit keywords.txt with your organization-specific terms
 
-# 2. Run a basic scan (last 30 days, DDG dorks only)
+# 2. Run a scan (DDG + breach dorks, last 30 days)
 ./Look4Gold13.ps1
 
-# 3. Include breach/security-news dorks
-./Look4Gold13.ps1 -IncludeBreach
+# 3. Skip breach dorks (DDG only)
+./Look4Gold13.ps1 -IncludeBreach:$false
 
 # 4. Custom date range
-./Look4Gold13.ps1 -DaysBack 90 -IncludeBreach
+./Look4Gold13.ps1 -DaysBack 90
 ```
 
 ## Tips
