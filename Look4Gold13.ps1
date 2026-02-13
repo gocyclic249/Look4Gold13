@@ -635,11 +635,9 @@ function Invoke-AskSageQuery {
     # Build context from scan results if available
     $scanContext = ""
     if ($ScanResults.Count -gt 0) {
-        $scanContext = "`n`nThe following findings were already discovered during an initial scan and should be used as a starting point. Expand on these and search broadly for additional related information — do not limit your search to only these sources:`n"
+        $scanContext = "`n`nThe following links were discovered during an initial scan. Use them as a starting point and search broadly for additional related information:`n"
         foreach ($r in $ScanResults) {
-            $scanContext += "- $($r.Title) | $($r.Url)"
-            if ($r.Summary) { $scanContext += " | $($r.Summary)" }
-            $scanContext += "`n"
+            $scanContext += "- $($r.Url)`n"
         }
     }
 
