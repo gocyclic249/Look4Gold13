@@ -9,7 +9,7 @@
 .EXAMPLE
     .\Look4Gold13.ps1 -MaxDorks 4
     .\Look4Gold13.ps1 -MaxDorks 1 -BaseDelay 90
-    .\Look4Gold13.ps1 -IncludeBreach:$false
+    .\Look4Gold13.ps1 -Silent
 #>
 param(
     [string]$KeywordFile,
@@ -17,11 +17,18 @@ param(
     [int]$BaseDelay      = 60,      # Base seconds between requests
     [int]$MinJitter      = 5,       # Min additional random seconds
     [int]$MaxJitter      = 15,      # Max additional random seconds
-    [bool]$IncludeBreach = $true,   # Include breach dorks (default: on)
     [switch]$VerboseOutput,         # Extra debug output
     [string]$OutputFile,            # Custom path for CSV export
-    [switch]$NoExport               # Suppress file export
+    [switch]$NoExport,              # Suppress file export
+    [switch]$Silent                 # Suppress all console output
 )
+
+# ============================================================================
+# SILENT MODE — suppress all console output when -Silent is set
+# ============================================================================
+if ($Silent) {
+    function Write-Host { <# silenced #> }
+}
 
 # ============================================================================
 # TLS CONFIGURATION
@@ -255,8 +262,7 @@ function Import-Keywords {
 function Import-Sources {
     param(
         [string]$Path,
-        [int]$MaxDorks       = 0,
-        [switch]$IncludeBreach
+        [int]$MaxDorks       = 0
     )
 
     if (-not $Path) {
@@ -272,7 +278,7 @@ function Import-Sources {
 
     # Load breach dorks first so they run before DDG gets blocked
     $dorks = @()
-    if ($IncludeBreach -and $sources.breachDorks) {
+    if ($sources.breachDorks) {
         $dorks += @($sources.breachDorks | ForEach-Object {
             @{ Label = $_.label; Dork = $_.dork }
         })
@@ -663,7 +669,7 @@ Please search for any recent cyber security news, breaches, leaks, vulnerabiliti
     Write-Host "[Ask Sage] This may take a moment (live web search enabled)..." -ForegroundColor DarkGray
 
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body -TimeoutSec 120
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
         Write-Host "[Ask Sage] Response received." -ForegroundColor Green
         return $response
     } catch {
@@ -688,7 +694,7 @@ Write-Host ""
 # Load config
 Write-Host "[Loading configuration]" -ForegroundColor White
 $keywords = Import-Keywords -Path $KeywordFile
-$dorks = Import-Sources -MaxDorks $MaxDorks -IncludeBreach:$IncludeBreach
+$dorks = Import-Sources -MaxDorks $MaxDorks
 
 # Group dorks by type (site:, text) to reduce query count
 $dorkGroups = @(Group-Dorks -Dorks $dorks)
@@ -725,20 +731,38 @@ $captchaState = @{
 $allResults = @()
 $seenUrls = @{}
 
-# Open DDG in a minimized browser window to prime the session
+# Open DDG in a new minimized browser window to prime the session
 $ddgProcess = $null
 try {
     Write-Host "[Browser] Opening DuckDuckGo to prime session..." -ForegroundColor DarkGray
-    $ddgProcess = Start-Process "https://html.duckduckgo.com/html/" -PassThru
-    Start-Sleep -Seconds 2
-    # Minimize the browser window
+
+    # Detect default browser and launch with --new-window so it doesn't open as a tab
+    $browserPath = $null
+    $browserArgs = @()
     try {
-        $shell = New-Object -ComObject Shell.Application
-        $shell.MinimizeAll()  # Minimize all, then restore all except the new one
-        Start-Sleep -Milliseconds 500
-        $shell.UndoMinimizeAll()
-        # Target just the browser window by its process handle
-        Add-Type @"
+        # Read the default HTTP handler from the registry
+        $progId = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice' -ErrorAction Stop).ProgId
+        $command = (Get-ItemProperty "Registry::HKEY_CLASSES_ROOT\$progId\shell\open\command" -ErrorAction Stop).'(default)'
+        if ($command -match '"([^"]+)"') {
+            $browserPath = $Matches[1]
+        }
+    } catch { }
+
+    if ($browserPath -and (Test-Path $browserPath)) {
+        # Chrome, Edge, Brave, and Firefox all support --new-window
+        $browserArgs = @('--new-window', 'https://html.duckduckgo.com/html/')
+        $ddgProcess = Start-Process -FilePath $browserPath -ArgumentList $browserArgs -WindowStyle Minimized -PassThru
+    } else {
+        # Fallback: open via shell (may open as a tab)
+        $ddgProcess = Start-Process "https://html.duckduckgo.com/html/" -PassThru
+    }
+
+    Start-Sleep -Seconds 2
+
+    # Minimize the browser window for the fallback path
+    if ($ddgProcess -and -not $ddgProcess.HasExited) {
+        try {
+            Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public class Win32 {
@@ -746,12 +770,10 @@ public class Win32 {
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 "@
-        if ($ddgProcess -and -not $ddgProcess.HasExited -and $ddgProcess.MainWindowHandle -ne [IntPtr]::Zero) {
-            [Win32]::ShowWindow($ddgProcess.MainWindowHandle, 6) | Out-Null  # 6 = SW_MINIMIZE
-        }
-    } catch {
-        # Non-critical — window just won't be minimized
-        Write-Host "[Browser] Could not minimize window (non-critical)" -ForegroundColor DarkGray
+            if ($ddgProcess.MainWindowHandle -ne [IntPtr]::Zero) {
+                [Win32]::ShowWindow($ddgProcess.MainWindowHandle, 6) | Out-Null  # 6 = SW_MINIMIZE
+            }
+        } catch { }
     }
 } catch {
     Write-Host "[Browser] Could not open DuckDuckGo: $($_.Exception.Message)" -ForegroundColor DarkYellow
