@@ -287,6 +287,67 @@ function Import-Sources {
 }
 
 # ============================================================================
+# DORK GROUPING
+# ============================================================================
+
+function Group-Dorks {
+    <# Groups flat dork array into combined OR query groups by type. #>
+    param([Parameter(Mandatory)][array]$Dorks)
+
+    $siteGroup     = @{ GroupLabel = 'Sites'; Dorks = @(); Labels = @(); Mappings = @() }
+    $filetypeGroup = @{ GroupLabel = 'Filetypes'; Dorks = @(); Labels = @(); Mappings = @() }
+    $textGroups    = @()
+
+    foreach ($d in $Dorks) {
+        if ($d.Dork -match '^site:(.+)$') {
+            $siteGroup.Dorks   += $d.Dork
+            $siteGroup.Labels  += $d.Label
+            $domain = ($Matches[1] -replace '\.', '\.') -replace '/', '\/'
+            $siteGroup.Mappings += @{ Label = $d.Label; Pattern = $domain }
+        }
+        elseif ($d.Dork -match '^filetype:(.+)$') {
+            $filetypeGroup.Dorks   += $d.Dork
+            $filetypeGroup.Labels  += $d.Label
+            $ext = $Matches[1]
+            $filetypeGroup.Mappings += @{ Label = $d.Label; Pattern = "\.$ext(\?|$|/)" }
+        }
+        else {
+            $textGroups += @{
+                GroupLabel   = $d.Label
+                Dorks        = @($d.Dork)
+                Labels       = @($d.Label)
+                Mappings     = @(@{ Label = $d.Label; Pattern = '.' })
+                CombinedDork = $d.Dork
+            }
+        }
+    }
+
+    $groups = @()
+
+    if ($siteGroup.Dorks.Count -gt 0) {
+        if ($siteGroup.Dorks.Count -eq 1) {
+            $siteGroup['CombinedDork'] = $siteGroup.Dorks[0]
+        } else {
+            $siteGroup['CombinedDork'] = '(' + ($siteGroup.Dorks -join ' OR ') + ')'
+        }
+        $groups += $siteGroup
+    }
+
+    if ($filetypeGroup.Dorks.Count -gt 0) {
+        if ($filetypeGroup.Dorks.Count -eq 1) {
+            $filetypeGroup['CombinedDork'] = $filetypeGroup.Dorks[0]
+        } else {
+            $filetypeGroup['CombinedDork'] = '(' + ($filetypeGroup.Dorks -join ' OR ') + ')'
+        }
+        $groups += $filetypeGroup
+    }
+
+    $groups += $textGroups
+
+    return $groups
+}
+
+# ============================================================================
 # RESULT PARSING
 # ============================================================================
 
@@ -294,7 +355,8 @@ function Parse-DdgResults {
     param(
         [Parameter(Mandatory)][string]$Html,
         [Parameter(Mandatory)][string]$Keyword,
-        [string]$DorkLabel = ''
+        [string]$GroupLabel = '',
+        [array]$DorkMappings = @()
     )
 
     $results = @()
@@ -348,11 +410,22 @@ function Parse-DdgResults {
         if ($resultUrl -match '^//') { $resultUrl = 'https:' + $resultUrl }
         if ($resultUrl -notmatch '^https?://') { $resultUrl = 'https://' + $resultUrl }
 
+        # Infer specific dork label from URL using mappings
+        $inferredLabel = $GroupLabel
+        if ($DorkMappings.Count -gt 0) {
+            foreach ($mapping in $DorkMappings) {
+                if ($resultUrl -match $mapping.Pattern) {
+                    $inferredLabel = $mapping.Label
+                    break
+                }
+            }
+        }
+
         $results += [PSCustomObject]@{
             Keyword = $Keyword
             Title   = $resultTitle
             Url     = $resultUrl
-            Dork    = $DorkLabel
+            Dork    = $inferredLabel
             Found   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
         }
     }
@@ -368,8 +441,9 @@ function Invoke-DdgSearch {
     param(
         [Parameter(Mandatory)][string]$Keyword,
         [Parameter(Mandatory)][string]$Dork,
-        [Parameter(Mandatory)][string]$DorkLabel,
+        [Parameter(Mandatory)][string]$GroupLabel,
         [Parameter(Mandatory)][ref]$CaptchaState,
+        [array]$DorkMappings = @(),
         [switch]$VerboseOutput
     )
 
@@ -379,13 +453,16 @@ function Invoke-DdgSearch {
     # 2. Build URL with randomized params
     $url = Build-DdgUrl -Keyword $Keyword -Dork $Dork
 
-    # Debug: show browser profile and search parameters for this request
+    # Debug: show browser profile, group info, and search parameters
     $dbgReferer = if ($identity.Headers['Referer']) { $identity.Headers['Referer'] } else { '(none)' }
     $dbgRegion = if ($url -match 'kl=([^&]+)') { $Matches[1] } else { 'wt-wt' }
     $dbgDateFilter = if ($url -match 'df=([^&]+)') { $Matches[1] } else { 'none' }
     $dbgSecFetchSite = if ($identity.Headers['Sec-Fetch-Site']) { $identity.Headers['Sec-Fetch-Site'] } else { 'n/a' }
-    Write-Host "    [DEBUG] Browser: $($identity.BrowserTag) | Referer: $dbgReferer | Region: $dbgRegion | DateFilter: $dbgDateFilter | SecFetchSite: $dbgSecFetchSite" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "    [DEBUG] Group: $GroupLabel | Browser: $($identity.BrowserTag) | Referer: $dbgReferer" -ForegroundColor DarkGray
+    Write-Host "    [DEBUG] Region: $dbgRegion | DateFilter: $dbgDateFilter | SecFetchSite: $dbgSecFetchSite" -ForegroundColor DarkGray
     Write-Host "    [DEBUG] UA: $($identity.Headers['User-Agent'])" -ForegroundColor DarkGray
+    Write-Host "    [DEBUG] Query: $Dork" -ForegroundColor DarkGray
 
     # 3. Make the request
     $reqParams = @{
@@ -470,11 +547,11 @@ function Invoke-DdgSearch {
     }
 
     # 5. Parse results
-    $results = Parse-DdgResults -Html $html -Keyword $Keyword -DorkLabel $DorkLabel
+    $results = Parse-DdgResults -Html $html -Keyword $Keyword -GroupLabel $GroupLabel -DorkMappings $DorkMappings
 
     # 6. Debug: save HTML if no results and verbose
     if ($results.Count -eq 0 -and $VerboseOutput) {
-        $debugFile = Join-Path $PSScriptRoot "debug_ddg_$($DorkLabel -replace '[^a-zA-Z0-9]','_').html"
+        $debugFile = Join-Path $PSScriptRoot "debug_ddg_$($GroupLabel -replace '[^a-zA-Z0-9]','_').html"
         $html | Out-File -FilePath $debugFile -Encoding utf8
         Write-Host "    [Debug] No results - HTML saved to $debugFile" -ForegroundColor DarkGray
     }
@@ -497,23 +574,26 @@ Write-Host "[Loading configuration]" -ForegroundColor White
 $keywords = Import-Keywords -Path $KeywordFile
 $dorks = Import-Sources -MaxDorks $MaxDorks -IncludeBreach:$IncludeBreach
 
-$totalQueries = $keywords.Count * $dorks.Count
+# Group dorks by type (site:, filetype:, text) to reduce query count
+$dorkGroups = @(Group-Dorks -Dorks $dorks)
+
+$totalQueries = $keywords.Count * $dorkGroups.Count
 $avgDelay = $BaseDelay + [math]::Floor(($MinJitter + $MaxJitter) / 2)
 $estimatedMinutes = [math]::Ceiling(($totalQueries * $avgDelay) / 60)
 
 Write-Host ""
 Write-Host "[Scan parameters]" -ForegroundColor White
 Write-Host "  Keywords:  $($keywords.Count)" -ForegroundColor Gray
-Write-Host "  Dorks:     $($dorks.Count)" -ForegroundColor Gray
-Write-Host "  Queries:   $totalQueries total" -ForegroundColor Gray
+Write-Host "  Dorks:     $($dorks.Count) (grouped into $($dorkGroups.Count) queries)" -ForegroundColor Gray
+Write-Host "  Queries:   $totalQueries total ($($dorks.Count) dorks combined via OR)" -ForegroundColor Gray
 Write-Host "  Delay:     ${BaseDelay}s base + ${MinJitter}-${MaxJitter}s jitter" -ForegroundColor Gray
 Write-Host "  Est. time: ~${estimatedMinutes} minutes" -ForegroundColor Gray
 Write-Host ""
 
-# Dork listing
-Write-Host "[Active dorks]" -ForegroundColor White
-foreach ($d in $dorks) {
-    Write-Host "  - $($d.Label): $($d.Dork)" -ForegroundColor DarkGray
+# Group listing
+Write-Host "[Query groups]" -ForegroundColor White
+foreach ($g in $dorkGroups) {
+    Write-Host "  [$($g.GroupLabel)] $($g.Dorks.Count) dork(s): $($g.Labels -join ', ')" -ForegroundColor DarkGray
 }
 Write-Host ""
 
@@ -543,22 +623,23 @@ foreach ($keyword in $keywords) {
         break
     }
 
-    foreach ($dork in $dorks) {
+    foreach ($group in $dorkGroups) {
         $queryNum++
 
         if ($captchaState.Blocked) {
-            Write-Host "  [BLOCKED] Skipping $($dork.Label)" -ForegroundColor Red
+            Write-Host "  [BLOCKED] Skipping $($group.GroupLabel)" -ForegroundColor Red
             continue
         }
 
-        Write-Host "  [$queryNum/$totalQueries] $($dork.Label)..." -ForegroundColor Gray -NoNewline
+        Write-Host "  [$queryNum/$totalQueries] $($group.GroupLabel) ($($group.Dorks.Count) dorks)..." -ForegroundColor Gray -NoNewline
 
         try {
             $searchResult = Invoke-DdgSearch `
                 -Keyword $keyword `
-                -Dork $dork.Dork `
-                -DorkLabel $dork.Label `
+                -Dork $group.CombinedDork `
+                -GroupLabel $group.GroupLabel `
                 -CaptchaState ([ref]$captchaState) `
+                -DorkMappings $group.Mappings `
                 -VerboseOutput:$VerboseOutput
 
             if ($searchResult.CaptchaBlocked) {
