@@ -8,13 +8,13 @@
     randomized timing, and query parameter variation.
 .EXAMPLE
     .\Look4Gold13.ps1 -MaxDorks 4
-    .\Look4Gold13.ps1 -MaxDorks 1 -BaseDelay 45
+    .\Look4Gold13.ps1 -MaxDorks 1 -BaseDelay 90
     .\Look4Gold13.ps1 -IncludeBreach
 #>
 param(
     [string]$KeywordFile,
     [int]$MaxDorks       = 0,       # 0 = all dorks; N = use first N only
-    [int]$BaseDelay      = 30,      # Base seconds between requests
+    [int]$BaseDelay      = 60,      # Base seconds between requests
     [int]$MinJitter      = 5,       # Min additional random seconds
     [int]$MaxJitter      = 15,      # Max additional random seconds
     [switch]$IncludeBreach,         # Also run breach dorks
@@ -375,15 +375,17 @@ function Invoke-DdgSearch {
 
     # 1. Fresh identity for this request
     $identity = Get-RandomIdentity
-    if ($VerboseOutput) {
-        Write-Host "    [ID] $($identity.BrowserTag)" -ForegroundColor DarkGray
-    }
 
     # 2. Build URL with randomized params
     $url = Build-DdgUrl -Keyword $Keyword -Dork $Dork
-    if ($VerboseOutput) {
-        Write-Host "    [URL] $url" -ForegroundColor DarkGray
-    }
+
+    # Debug: show browser profile and search parameters for this request
+    $dbgReferer = if ($identity.Headers['Referer']) { $identity.Headers['Referer'] } else { '(none)' }
+    $dbgRegion = if ($url -match 'kl=([^&]+)') { $Matches[1] } else { 'wt-wt' }
+    $dbgDateFilter = if ($url -match 'df=([^&]+)') { $Matches[1] } else { 'none' }
+    $dbgSecFetchSite = if ($identity.Headers['Sec-Fetch-Site']) { $identity.Headers['Sec-Fetch-Site'] } else { 'n/a' }
+    Write-Host "    [DEBUG] Browser: $($identity.BrowserTag) | Referer: $dbgReferer | Region: $dbgRegion | DateFilter: $dbgDateFilter | SecFetchSite: $dbgSecFetchSite" -ForegroundColor DarkGray
+    Write-Host "    [DEBUG] UA: $($identity.Headers['User-Agent'])" -ForegroundColor DarkGray
 
     # 3. Make the request
     $reqParams = @{
