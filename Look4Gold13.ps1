@@ -614,11 +614,12 @@ function Invoke-DdgSearch {
 # ============================================================================
 
 function Invoke-AskSageQuery {
-    <# Sends a single query to the Ask Sage API using keywords from the scan.
+    <# Sends a single query to the Ask Sage API using keywords and scan results.
        Returns the parsed response or $null on failure. #>
     param(
         [Parameter(Mandatory)][array]$Keywords,
-        [Parameter(Mandatory)][string]$ApiKey
+        [Parameter(Mandatory)][string]$ApiKey,
+        [array]$ScanResults = @()
     )
 
     $uri = "https://api.genai.army.mil/server/query"
@@ -628,14 +629,23 @@ function Invoke-AskSageQuery {
         "x-access-tokens"  = $ApiKey
     }
 
-    $siteList = "haveibeenpwned.com,databreaches.net,bleepingcomputer.com,krebsonsecurity.com"
-    $categories = "Breach,leak,Ransomware,Credential exposure,Vulnerability,Other Cyber Security notes"
     $searchText = $Keywords -join ', '
     $days = 30
 
+    # Build context from scan results if available
+    $scanContext = ""
+    if ($ScanResults.Count -gt 0) {
+        $scanContext = "`n`nThe following findings were already discovered during an initial scan and should be used as a starting point. Expand on these and search broadly for additional related information — do not limit your search to only these sources:`n"
+        foreach ($r in $ScanResults) {
+            $scanContext += "- $($r.Title) | $($r.Url)"
+            if ($r.Summary) { $scanContext += " | $($r.Summary)" }
+            $scanContext += "`n"
+        }
+    }
+
     $body = @{
         message     = @"
-Please search for $searchText and $categories in $siteList in the last $days days. Provide a link to the article or site referenced. Format response as JSON. Use the following format for JSON.
+Please search for any recent cyber security news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Search broadly across the internet — do not limit yourself to specific sites. Provide a link to every article or site referenced. Format response as JSON array. Use the following format for each entry:
 {
   "date_published":
   "source_site":
@@ -643,7 +653,7 @@ Please search for $searchText and $categories in $siteList in the last $days day
   "title":
   "summary":
   "link":
-}
+}$scanContext
 "@
         persona     = 5
         model       = "google-gemini-2.5-pro"
@@ -860,7 +870,7 @@ if ($sageApiKey) {
     Write-Host "========================================" -ForegroundColor White
     Write-Host ""
 
-    $sageResponse = Invoke-AskSageQuery -Keywords $keywords -ApiKey $sageApiKey
+    $sageResponse = Invoke-AskSageQuery -Keywords $keywords -ApiKey $sageApiKey -ScanResults $allResults
 
     if ($sageResponse) {
         # Save AGI response to text file
