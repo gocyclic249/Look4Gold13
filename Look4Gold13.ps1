@@ -38,6 +38,7 @@ try {
 } catch {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 }
+Add-Type -AssemblyName System.Web
 
 # ============================================================================
 # BROWSER PROFILE POOL
@@ -342,33 +343,6 @@ function Group-Dorks {
 }
 
 # ============================================================================
-# SNIPPET DATE EXTRACTION
-# ============================================================================
-
-function Split-SnippetDate {
-    param([string]$Snippet)
-
-    if (-not $Snippet) {
-        return @{ Date = ''; Text = '' }
-    }
-
-    # Pattern 1: "Mar 10, 2025 - ..." or "March 10, 2025 - ..."
-    if ($Snippet -match '^(\w{3,9}\s+\d{1,2},\s+\d{4})\s*[\-\u2013]\s*(.*)$') {
-        return @{ Date = $Matches[1]; Text = $Matches[2].Trim() }
-    }
-    # Pattern 2: "2025-03-10 - ..."
-    if ($Snippet -match '^(\d{4}-\d{2}-\d{2})\s*[\-\u2013]\s*(.*)$') {
-        return @{ Date = $Matches[1]; Text = $Matches[2].Trim() }
-    }
-    # Pattern 3: "10 Mar 2025 - ..."
-    if ($Snippet -match '^(\d{1,2}\s+\w{3,9}\s+\d{4})\s*[\-\u2013]\s*(.*)$') {
-        return @{ Date = $Matches[1]; Text = $Matches[2].Trim() }
-    }
-
-    return @{ Date = ''; Text = $Snippet }
-}
-
-# ============================================================================
 # RESULT PARSING
 # ============================================================================
 
@@ -473,16 +447,12 @@ function Parse-DdgResults {
             $rawSnippet = $snippetLookup[$rawHref]
         }
 
-        $dateSplit = Split-SnippetDate -Snippet $rawSnippet
-
         $results += [PSCustomObject]@{
-            Keyword       = $Keyword
-            Title         = $resultTitle
-            Url           = $resultUrl
-            Dork          = $inferredLabel
-            Found         = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-            Summary       = $dateSplit.Text
-            DatePublished = $dateSplit.Date
+            Keyword = $Keyword
+            Title   = $resultTitle
+            Url     = $resultUrl
+            Dork    = $inferredLabel
+            Summary = $rawSnippet
         }
     }
 
@@ -649,11 +619,12 @@ function Invoke-AskSageQuery {
 
     $body = @{
         message     = @"
-Please search for any recent cyber security news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Search broadly across the internet — do not limit yourself to specific sites. Provide a link to every article or site referenced. Format response as JSON array. Use the following format for each entry:
+Please search for any recent cyber security news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Search broadly across the internet — do not limit yourself to specific sites. Provide a link to every article or site referenced. For each entry, assess the severity as Critical, High, Medium, Low, or Informational based on the potential impact. Format response as JSON array. Use the following format for each entry:
 {
   "date_published":
   "source_site":
   "category":
+  "severity":
   "title":
   "summary":
   "link":
@@ -733,6 +704,7 @@ $seenUrls = @{}
 
 # Open DDG in a new minimized browser window to prime the session
 $ddgProcess = $null
+$ddgBrowserName = $null
 try {
     Write-Host "[Browser] Opening DuckDuckGo to prime session..." -ForegroundColor DarkGray
 
@@ -740,7 +712,6 @@ try {
     $browserPath = $null
     $browserArgs = @()
     try {
-        # Read the default HTTP handler from the registry
         $progId = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice' -ErrorAction Stop).ProgId
         $command = (Get-ItemProperty "Registry::HKEY_CLASSES_ROOT\$progId\shell\open\command" -ErrorAction Stop).'(default)'
         if ($command -match '"([^"]+)"') {
@@ -748,18 +719,26 @@ try {
         }
     } catch { }
 
+    # Snapshot browser PIDs before launch so we can find the new window later
+    $preBrowserPIDs = @()
     if ($browserPath -and (Test-Path $browserPath)) {
-        # Chrome, Edge, Brave, and Firefox all support --new-window
+        $ddgBrowserName = [System.IO.Path]::GetFileNameWithoutExtension($browserPath)
+        $preBrowserPIDs = @(Get-Process -Name $ddgBrowserName -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
         $browserArgs = @('--new-window', 'https://html.duckduckgo.com/html/')
         $ddgProcess = Start-Process -FilePath $browserPath -ArgumentList $browserArgs -WindowStyle Minimized -PassThru
     } else {
-        # Fallback: open via shell (may open as a tab)
         $ddgProcess = Start-Process "https://html.duckduckgo.com/html/" -PassThru
     }
 
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 3
 
-    # Minimize the browser window for the fallback path
+    # Find any new browser PIDs that appeared (Chromium merges into existing process)
+    if ($ddgBrowserName) {
+        $postBrowserPIDs = @(Get-Process -Name $ddgBrowserName -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+        $Script:NewBrowserPIDs = @($postBrowserPIDs | Where-Object { $_ -notin $preBrowserPIDs })
+    }
+
+    # Minimize the window via Win32 for the fallback path
     if ($ddgProcess -and -not $ddgProcess.HasExited) {
         try {
             Add-Type @"
@@ -904,7 +883,7 @@ if ($allResults.Count -gt 0 -and -not $NoExport) {
     }
 
     try {
-        $allResults | Select-Object Title, DatePublished, Summary, Url |
+        $allResults | Select-Object Title, Summary, Url |
             Export-Csv -Path $OutputFile -NoTypeInformation -Encoding UTF8
         Write-Host "[CSV export] $($allResults.Count) results saved to:" -ForegroundColor Cyan
         Write-Host "  $OutputFile" -ForegroundColor White
@@ -915,6 +894,7 @@ if ($allResults.Count -gt 0 -and -not $NoExport) {
 }
 
 # Ask Sage AGI query (runs once, only if API key env var is set)
+$sageItems = @()
 $sageApiKey = $env:ASK_SAGE_API_KEY
 if ($sageApiKey) {
     Write-Host "========================================" -ForegroundColor White
@@ -925,31 +905,40 @@ if ($sageApiKey) {
     $sageResponse = Invoke-AskSageQuery -Keywords $keywords -ApiKey $sageApiKey -ScanResults $allResults
 
     if ($sageResponse) {
-        # Save AGI response to text file
-        $sageTimestamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
-        $sagePath = Join-Path $PSScriptRoot "Look4Gold13_AGI_$sageTimestamp.txt"
+        # Extract the AGI message and attempt to parse the JSON array from it
+        $sageRaw = if ($sageResponse.message) { $sageResponse.message } else { $sageResponse | ConvertTo-Json -Depth 5 }
+        Write-Host "[Ask Sage] Response received." -ForegroundColor Cyan
 
-        $sageOutput = @()
-        $sageOutput += "Look4Gold13 - Ask Sage AGI Analysis"
-        $sageOutput += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-        $sageOutput += "Keywords:  $($keywords -join ', ')"
-        $sageOutput += "Model:     google-gemini-2.5-pro (live web search)"
-        $sageOutput += "========================================"
-        $sageOutput += ""
-
-        if ($sageResponse.message) {
-            $sageOutput += $sageResponse.message
-            Write-Host "[Ask Sage] Response:" -ForegroundColor Cyan
-            Write-Host $sageResponse.message -ForegroundColor White
-        } else {
-            $sageOutput += ($sageResponse | ConvertTo-Json -Depth 5)
-            Write-Host "[Ask Sage] Response:" -ForegroundColor Cyan
-            Write-Host ($sageResponse | ConvertTo-Json -Depth 5) -ForegroundColor White
+        # Try to extract JSON array from the response (may be wrapped in markdown code fences)
+        $sageItems = @()
+        $jsonText = $sageRaw
+        if ($jsonText -match '(?s)```(?:json)?\s*(\[.*?\])\s*```') {
+            $jsonText = $Matches[1]
+        } elseif ($jsonText -match '(?s)(\[\s*\{.*\}\s*\])') {
+            $jsonText = $Matches[1]
+        }
+        try {
+            $sageItems = @($jsonText | ConvertFrom-Json)
+        } catch {
+            Write-Host "[Ask Sage] Could not parse JSON from response, saving raw" -ForegroundColor DarkYellow
         }
 
-        $sageOutput | Out-File -FilePath $sagePath -Encoding UTF8
-        Write-Host ""
-        Write-Host "[Ask Sage] Results saved to:" -ForegroundColor Cyan
+        # Build proper JSON output
+        $sageTimestamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
+        $sagePath = Join-Path $PSScriptRoot "Look4Gold13_AGI_$sageTimestamp.json"
+
+        $sageJsonObj = @{
+            metadata = @{
+                tool       = "Look4Gold13"
+                generated  = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
+                keywords   = $keywords
+                model      = "google-gemini-2.5-pro"
+            }
+            results = $sageItems
+        }
+
+        $sageJsonObj | ConvertTo-Json -Depth 10 | Out-File -FilePath $sagePath -Encoding UTF8
+        Write-Host "[Ask Sage] $($sageItems.Count) result(s) saved to:" -ForegroundColor Cyan
         Write-Host "  $sagePath" -ForegroundColor White
     }
     Write-Host ""
@@ -958,18 +947,134 @@ if ($sageApiKey) {
     Write-Host ""
 }
 
+# ============================================================================
+# HTML REPORT
+# ============================================================================
+if (($allResults.Count -gt 0 -or ($sageItems -and $sageItems.Count -gt 0)) -and -not $NoExport) {
+    $reportTimestamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
+    $reportPath = Join-Path $PSScriptRoot "Look4Gold13_Report_$reportTimestamp.html"
+
+    $severityColors = @{
+        'Critical'      = '#dc3545'
+        'High'          = '#fd7e14'
+        'Medium'        = '#ffc107'
+        'Low'           = '#28a745'
+        'Informational' = '#6c757d'
+    }
+
+    $html = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Look4Gold13 Report - $reportTimestamp</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; padding: 2rem; }
+  h1 { color: #e94560; margin-bottom: 0.5rem; }
+  .subtitle { color: #888; margin-bottom: 2rem; }
+  h2 { color: #0f3460; background: #e94560; display: inline-block; padding: 0.4rem 1rem; border-radius: 4px; margin: 2rem 0 1rem; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; }
+  th { background: #16213e; color: #e94560; text-align: left; padding: 0.6rem 0.8rem; border-bottom: 2px solid #0f3460; }
+  td { padding: 0.6rem 0.8rem; border-bottom: 1px solid #2a2a4a; vertical-align: top; }
+  tr:hover { background: #16213e; }
+  a { color: #53a8e2; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .severity { padding: 0.2rem 0.6rem; border-radius: 3px; font-size: 0.8rem; font-weight: bold; color: #fff; display: inline-block; }
+  .summary { color: #aaa; font-size: 0.9rem; }
+  .stats { color: #888; margin-bottom: 1rem; }
+  .section-empty { color: #666; font-style: italic; margin-bottom: 2rem; }
+</style>
+</head>
+<body>
+<h1>Look4Gold13 - AU-13 Report</h1>
+<p class="subtitle">Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | Keywords: $($keywords -join ', ')</p>
+<p class="stats">Scan duration: $($elapsed.ToString('hh\:mm\:ss')) | Queries: $queryNum / $totalQueries | CAPTCHA hits: $($captchaState.HitCount)</p>
+"@
+
+    # --- AGI Results Section ---
+    $html += "`n<h2>AGI Intelligence (Ask Sage)</h2>`n"
+    if ($sageItems -and $sageItems.Count -gt 0) {
+        $html += "<table><tr><th>Severity</th><th>Title</th><th>Category</th><th>Source</th><th>Summary</th></tr>`n"
+        foreach ($item in $sageItems) {
+            $sev = if ($item.severity) { $item.severity } else { 'Informational' }
+            $sevColor = if ($severityColors.ContainsKey($sev)) { $severityColors[$sev] } else { '#6c757d' }
+            $link = if ($item.link) { "<a href=`"$($item.link)`" target=`"_blank`">$([System.Web.HttpUtility]::HtmlEncode($item.source_site))</a>" } else { [System.Web.HttpUtility]::HtmlEncode($item.source_site) }
+            $html += "<tr>"
+            $html += "<td><span class=`"severity`" style=`"background:$sevColor`">$([System.Web.HttpUtility]::HtmlEncode($sev))</span></td>"
+            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($item.title))</td>"
+            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($item.category))</td>"
+            $html += "<td>$link</td>"
+            $html += "<td class=`"summary`">$([System.Web.HttpUtility]::HtmlEncode($item.summary))</td>"
+            $html += "</tr>`n"
+        }
+        $html += "</table>`n"
+    } else {
+        $html += "<p class=`"section-empty`">No AGI results available (API key not set or query returned no data).</p>`n"
+    }
+
+    # --- Dork Results Section ---
+    $html += "<h2>Search Dork Results</h2>`n"
+    if ($allResults.Count -gt 0) {
+        $html += "<table><tr><th>Keyword</th><th>Dork</th><th>Title</th><th>URL</th><th>Summary</th></tr>`n"
+        foreach ($r in $allResults) {
+            $html += "<tr>"
+            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Keyword))</td>"
+            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Dork))</td>"
+            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Title))</td>"
+            $html += "<td><a href=`"$($r.Url)`" target=`"_blank`">$([System.Web.HttpUtility]::HtmlEncode($r.Url))</a></td>"
+            $summaryText = if ($r.Summary.Length -gt 200) { $r.Summary.Substring(0, 200) + '...' } else { $r.Summary }
+            $html += "<td class=`"summary`">$([System.Web.HttpUtility]::HtmlEncode($summaryText))</td>"
+            $html += "</tr>`n"
+        }
+        $html += "</table>`n"
+    } else {
+        $html += "<p class=`"section-empty`">No dork results found.</p>`n"
+    }
+
+    $html += "</body></html>"
+
+    try {
+        $html | Out-File -FilePath $reportPath -Encoding UTF8
+        Write-Host "[HTML Report] Saved to:" -ForegroundColor Cyan
+        Write-Host "  $reportPath" -ForegroundColor White
+    } catch {
+        Write-Host "[HTML Report] FAILED: $($_.Exception.Message)" -ForegroundColor Red
+    }
+    Write-Host ""
+}
+
 # Close the DDG browser window we opened at start
+$ddgClosed = $false
+# Try the original process handle first
 if ($ddgProcess -and -not $ddgProcess.HasExited) {
     try {
         $ddgProcess.CloseMainWindow() | Out-Null
-        # Give it a moment to close gracefully
-        if (-not $ddgProcess.WaitForExit(5000)) {
-            $ddgProcess.Kill()
+        if (-not $ddgProcess.WaitForExit(5000)) { $ddgProcess.Kill() }
+        $ddgClosed = $true
+    } catch { }
+}
+# If the process merged (Chromium), kill the new PIDs we tracked
+if (-not $ddgClosed -and $Script:NewBrowserPIDs -and $Script:NewBrowserPIDs.Count -gt 0) {
+    try {
+        foreach ($pid in $Script:NewBrowserPIDs) {
+            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
         }
-        Write-Host "[Browser] DuckDuckGo window closed." -ForegroundColor DarkGray
-    } catch {
-        Write-Host "[Browser] Could not close window: $($_.Exception.Message)" -ForegroundColor DarkGray
-    }
+        $ddgClosed = $true
+    } catch { }
+}
+# Last resort: find any window with DuckDuckGo in the title
+if (-not $ddgClosed -and $ddgBrowserName) {
+    try {
+        Get-Process -Name $ddgBrowserName -ErrorAction SilentlyContinue |
+            Where-Object { $_.MainWindowTitle -match 'DuckDuckGo' } |
+            ForEach-Object { $_.CloseMainWindow() | Out-Null }
+        $ddgClosed = $true
+    } catch { }
+}
+if ($ddgClosed) {
+    Write-Host "[Browser] DuckDuckGo window closed." -ForegroundColor DarkGray
 }
 
 Write-Host "Done." -ForegroundColor Green
