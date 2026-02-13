@@ -912,13 +912,16 @@ if ($sageApiKey) {
         # Try to extract JSON array from the response (may be wrapped in markdown code fences)
         $sageItems = @()
         $jsonText = $sageRaw
-        if ($jsonText -match '(?s)```(?:json)?\s*(\[.*?\])\s*```') {
+        # Strip markdown code fences if present
+        if ($jsonText -match '(?s)```(?:json)?\s*(\[[\s\S]*\])\s*```') {
             $jsonText = $Matches[1]
-        } elseif ($jsonText -match '(?s)(\[\s*\{.*\}\s*\])') {
+        } elseif ($jsonText -match '(?s)(\[\s*\{[\s\S]*\}\s*\])') {
             $jsonText = $Matches[1]
         }
         try {
-            $sageItems = @($jsonText | ConvertFrom-Json)
+            $parsed = $jsonText | ConvertFrom-Json
+            # Ensure we always have an array (ConvertFrom-Json unwraps single-item arrays)
+            $sageItems = @($parsed)
         } catch {
             Write-Host "[Ask Sage] Could not parse JSON from response, saving raw" -ForegroundColor DarkYellow
         }
@@ -995,18 +998,34 @@ if (($allResults.Count -gt 0 -or ($sageItems -and $sageItems.Count -gt 0)) -and 
 
     # --- AGI Results Section ---
     $html += "`n<h2>AGI Intelligence (Ask Sage)</h2>`n"
-    if ($sageItems -and $sageItems.Count -gt 0) {
-        $html += "<table><tr><th>Severity</th><th>Title</th><th>Category</th><th>Source</th><th>Summary</th></tr>`n"
-        foreach ($item in $sageItems) {
-            $sev = if ($item.severity) { $item.severity } else { 'Informational' }
+    if ($sageItems -and @($sageItems).Count -gt 0) {
+        $html += "<table>`n<tr><th>Severity</th><th>Title</th><th>Category</th><th>Source</th><th>Summary</th></tr>`n"
+        foreach ($item in @($sageItems)) {
+            # Safely read each property, defaulting to empty string
+            $sev        = if ($item.severity)    { "$($item.severity)" }    else { 'Informational' }
+            $itemTitle  = if ($item.title)        { "$($item.title)" }      else { '' }
+            $itemCat    = if ($item.category)     { "$($item.category)" }   else { '' }
+            $itemSite   = if ($item.source_site)  { "$($item.source_site)" } else { '' }
+            $itemLink   = if ($item.link)         { "$($item.link)" }       else { '' }
+            $itemSum    = if ($item.summary)       { "$($item.summary)" }   else { '' }
+
             $sevColor = if ($severityColors.ContainsKey($sev)) { $severityColors[$sev] } else { '#6c757d' }
-            $link = if ($item.link) { "<a href=`"$($item.link)`" target=`"_blank`">$([System.Web.HttpUtility]::HtmlEncode($item.source_site))</a>" } else { [System.Web.HttpUtility]::HtmlEncode($item.source_site) }
+
+            # Build source cell: linked if we have a URL, plain text otherwise
+            $sourceCell = ''
+            if ($itemLink) {
+                $encodedHref = [System.Web.HttpUtility]::HtmlAttributeEncode($itemLink)
+                $sourceCell = "<a href=`"$encodedHref`" target=`"_blank`">$([System.Web.HttpUtility]::HtmlEncode($itemSite))</a>"
+            } else {
+                $sourceCell = [System.Web.HttpUtility]::HtmlEncode($itemSite)
+            }
+
             $html += "<tr>"
             $html += "<td><span class=`"severity`" style=`"background:$sevColor`">$([System.Web.HttpUtility]::HtmlEncode($sev))</span></td>"
-            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($item.title))</td>"
-            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($item.category))</td>"
-            $html += "<td>$link</td>"
-            $html += "<td class=`"summary`">$([System.Web.HttpUtility]::HtmlEncode($item.summary))</td>"
+            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($itemTitle))</td>"
+            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($itemCat))</td>"
+            $html += "<td>$sourceCell</td>"
+            $html += "<td class=`"summary`">$([System.Web.HttpUtility]::HtmlEncode($itemSum))</td>"
             $html += "</tr>`n"
         }
         $html += "</table>`n"
@@ -1023,8 +1042,10 @@ if (($allResults.Count -gt 0 -or ($sageItems -and $sageItems.Count -gt 0)) -and 
             $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Keyword))</td>"
             $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Dork))</td>"
             $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Title))</td>"
-            $html += "<td><a href=`"$($r.Url)`" target=`"_blank`">$([System.Web.HttpUtility]::HtmlEncode($r.Url))</a></td>"
-            $summaryText = if ($r.Summary.Length -gt 200) { $r.Summary.Substring(0, 200) + '...' } else { $r.Summary }
+            $encodedUrl = [System.Web.HttpUtility]::HtmlAttributeEncode($r.Url)
+            $html += "<td><a href=`"$encodedUrl`" target=`"_blank`">$([System.Web.HttpUtility]::HtmlEncode($r.Url))</a></td>"
+            $rawSummary = if ($r.Summary) { "$($r.Summary)" } else { '' }
+            $summaryText = if ($rawSummary.Length -gt 200) { $rawSummary.Substring(0, 200) + '...' } else { $rawSummary }
             $html += "<td class=`"summary`">$([System.Web.HttpUtility]::HtmlEncode($summaryText))</td>"
             $html += "</tr>`n"
         }
