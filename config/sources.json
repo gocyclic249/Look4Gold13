@@ -17,11 +17,7 @@
         { "label": "PrivateBin",       "dork": "site:privatebin.net" },
         { "label": "0bin",             "dork": "site:0bin.net" },
         { "label": "Hastebin",         "dork": "site:hastebin.com" },
-        { "label": "Ideone",           "dork": "site:ideone.com" },
-        { "label": "PDF files",        "dork": "filetype:pdf" },
-        { "label": "Excel files",      "dork": "filetype:xlsx" },
-        { "label": "Word docs",        "dork": "filetype:doc" },
-        { "label": "CSV files",        "dork": "filetype:csv" }
+        { "label": "Ideone",           "dork": "site:ideone.com" }
     ],
     "breachDorks": [
         { "label": "Breach/leak news",    "dork": "breach data leak compromised" },

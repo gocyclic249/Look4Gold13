@@ -268,15 +268,17 @@ function Import-Sources {
 
     $sources = Get-Content -Path $Path -Raw | ConvertFrom-Json
 
-    $dorks = @($sources.ddgDorks | ForEach-Object {
-        @{ Label = $_.label; Dork = $_.dork }
-    })
-
+    # Load breach dorks first so they run before DDG gets blocked
+    $dorks = @()
     if ($IncludeBreach -and $sources.breachDorks) {
         $dorks += @($sources.breachDorks | ForEach-Object {
             @{ Label = $_.label; Dork = $_.dork }
         })
     }
+
+    $dorks += @($sources.ddgDorks | ForEach-Object {
+        @{ Label = $_.label; Dork = $_.dork }
+    })
 
     if ($MaxDorks -gt 0 -and $MaxDorks -lt $dorks.Count) {
         $dorks = $dorks[0..($MaxDorks - 1)]
@@ -294,9 +296,8 @@ function Group-Dorks {
     <# Groups flat dork array into combined OR query groups by type. #>
     param([Parameter(Mandatory)][array]$Dorks)
 
-    $siteGroup     = @{ GroupLabel = 'Sites'; Dorks = @(); Labels = @(); Mappings = @() }
-    $filetypeGroup = @{ GroupLabel = 'Filetypes'; Dorks = @(); Labels = @(); Mappings = @() }
-    $textGroups    = @()
+    $siteGroup  = @{ GroupLabel = 'Sites'; Dorks = @(); Labels = @(); Mappings = @() }
+    $textGroups = @()
 
     foreach ($d in $Dorks) {
         if ($d.Dork -match '^site:(.+)$') {
@@ -304,12 +305,6 @@ function Group-Dorks {
             $siteGroup.Labels  += $d.Label
             $domain = ($Matches[1] -replace '\.', '\.') -replace '/', '\/'
             $siteGroup.Mappings += @{ Label = $d.Label; Pattern = $domain }
-        }
-        elseif ($d.Dork -match '^filetype:(.+)$') {
-            $filetypeGroup.Dorks   += $d.Dork
-            $filetypeGroup.Labels  += $d.Label
-            $ext = $Matches[1]
-            $filetypeGroup.Mappings += @{ Label = $d.Label; Pattern = "\.$ext(\?|$|/)" }
         }
         else {
             $textGroups += @{
@@ -331,15 +326,6 @@ function Group-Dorks {
             $siteGroup['CombinedDork'] = '(' + ($siteGroup.Dorks -join ' OR ') + ')'
         }
         $groups += $siteGroup
-    }
-
-    if ($filetypeGroup.Dorks.Count -gt 0) {
-        if ($filetypeGroup.Dorks.Count -eq 1) {
-            $filetypeGroup['CombinedDork'] = $filetypeGroup.Dorks[0]
-        } else {
-            $filetypeGroup['CombinedDork'] = '(' + ($filetypeGroup.Dorks -join ' OR ') + ')'
-        }
-        $groups += $filetypeGroup
     }
 
     $groups += $textGroups
