@@ -6,6 +6,8 @@
 *.log
 *.xlsx
 *.csv
+Look4Gold13_AGI_*.txt
+Look4Gold13_Results_*.txt
 /Output/
 /Reports/
 debug_*.html
