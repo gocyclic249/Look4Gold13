@@ -19,8 +19,8 @@ param(
     [int]$MaxJitter      = 15,      # Max additional random seconds
     [bool]$IncludeBreach = $true,   # Include breach dorks (default: on)
     [switch]$VerboseOutput,         # Extra debug output
-    [string]$OutputFile,            # Custom path for .xlsx export
-    [switch]$NoExport               # Suppress Excel file export
+    [string]$OutputFile,            # Custom path for CSV export
+    [switch]$NoExport               # Suppress file export
 )
 
 # ============================================================================
@@ -610,94 +610,68 @@ function Invoke-DdgSearch {
 }
 
 # ============================================================================
-# EXCEL EXPORT
+# ASK SAGE AGI QUERY
 # ============================================================================
 
-function Export-ResultsToXlsx {
+function Invoke-AskSageQuery {
+    <# Sends a single query to the Ask Sage API using keywords and scan results.
+       Returns the parsed response or $null on failure. #>
     param(
-        [Parameter(Mandatory)][array]$Results,
-        [Parameter(Mandatory)][string]$Path
+        [Parameter(Mandatory)][array]$Keywords,
+        [Parameter(Mandatory)][string]$ApiKey,
+        [array]$ScanResults = @()
     )
 
-    # Load WindowsBase for System.IO.Packaging (ships with .NET Framework 3.0+)
-    $null = [Reflection.Assembly]::LoadWithPartialName("WindowsBase")
+    $uri = "https://api.genai.army.mil/server/query"
 
-    $nsSpreadsheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-    $nsRelDoc      = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-    $ctWorkbook    = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
-    $ctWorksheet   = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"
-    $rtOfficeDoc   = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
-    $rtWorksheet   = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+    $headers = @{
+        "Content-Type"     = "application/json"
+        "x-access-tokens"  = $ApiKey
+    }
 
-    # Delete existing file if present
-    if (Test-Path $Path) { Remove-Item $Path -Force }
+    $searchText = $Keywords -join ', '
+    $days = 30
 
-    $package = [System.IO.Packaging.Package]::Open(
-        $Path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::ReadWrite)
+    # Build context from scan results if available
+    $scanContext = ""
+    if ($ScanResults.Count -gt 0) {
+        $scanContext = "`n`nThe following links were discovered during an initial scan. Use them as a starting point and search broadly for additional related information:`n"
+        foreach ($r in $ScanResults) {
+            $scanContext += "- $($r.Url)`n"
+        }
+    }
+
+    $body = @{
+        message     = @"
+Please search for any recent cyber security news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Search broadly across the internet — do not limit yourself to specific sites. Provide a link to every article or site referenced. Format response as JSON array. Use the following format for each entry:
+{
+  "date_published":
+  "source_site":
+  "category":
+  "title":
+  "summary":
+  "link":
+}$scanContext
+"@
+        persona     = 5
+        model       = "google-gemini-2.5-pro"
+        temperature = 0.7
+        live        = 2
+    } | ConvertTo-Json -Depth 3
+
+    Write-Host "[Ask Sage] Sending AGI query for: $searchText" -ForegroundColor Cyan
+    Write-Host "[Ask Sage] This may take a moment (live web search enabled)..." -ForegroundColor DarkGray
 
     try {
-        # --- workbook.xml ---
-        $wbUri  = [Uri]::new("/xl/workbook.xml", [UriKind]::Relative)
-        $wbPart = $package.CreatePart($wbUri, $ctWorkbook, [System.IO.Packaging.CompressionOption]::Normal)
-        $package.CreateRelationship($wbUri, [System.IO.Packaging.TargetMode]::Internal, $rtOfficeDoc)
-
-        $wbXml = @"
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="$nsSpreadsheet" xmlns:r="$nsRelDoc">
-  <sheets>
-    <sheet name="Results" sheetId="1" r:id="rId1"/>
-  </sheets>
-</workbook>
-"@
-        $wbStream = $wbPart.GetStream([System.IO.FileMode]::Create)
-        $wbWriter = [System.IO.StreamWriter]::new($wbStream, [System.Text.Encoding]::UTF8)
-        $wbWriter.Write($wbXml)
-        $wbWriter.Flush()
-        $wbWriter.Close()
-
-        # --- sheet1.xml ---
-        $shUri  = [Uri]::new("/xl/worksheets/sheet1.xml", [UriKind]::Relative)
-        $shPart = $package.CreatePart($shUri, $ctWorksheet, [System.IO.Packaging.CompressionOption]::Normal)
-        $wbPart.CreateRelationship($shUri, [System.IO.Packaging.TargetMode]::Internal, $rtWorksheet, "rId1")
-
-        # Build rows with StringBuilder for performance
-        $sb = [System.Text.StringBuilder]::new()
-
-        # Header row
-        $headers = @('Title', 'Date Published', 'Summary', 'Link')
-        $null = $sb.Append('<row>')
-        foreach ($h in $headers) {
-            $escaped = [System.Security.SecurityElement]::Escape($h)
-            $null = $sb.Append("<c t=`"inlineStr`"><is><t>$escaped</t></is></c>")
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body -TimeoutSec 120
+        Write-Host "[Ask Sage] Response received." -ForegroundColor Green
+        return $response
+    } catch {
+        Write-Host "[Ask Sage] ERROR: $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.Exception.Response) {
+            Write-Host "[Ask Sage] HTTP Status: $($_.Exception.Response.StatusCode)" -ForegroundColor Red
         }
-        $null = $sb.AppendLine('</row>')
-
-        # Data rows
-        foreach ($r in $Results) {
-            $cells = @($r.Title, $r.DatePublished, $r.Summary, $r.Url)
-            $null = $sb.Append('<row>')
-            foreach ($val in $cells) {
-                $escaped = [System.Security.SecurityElement]::Escape([string]$val)
-                $null = $sb.Append("<c t=`"inlineStr`"><is><t>$escaped</t></is></c>")
-            }
-            $null = $sb.AppendLine('</row>')
-        }
-
-        $shXml = @"
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="$nsSpreadsheet">
-  <sheetData>
-$($sb.ToString())  </sheetData>
-</worksheet>
-"@
-        $shStream = $shPart.GetStream([System.IO.FileMode]::Create)
-        $shWriter = [System.IO.StreamWriter]::new($shStream, [System.Text.Encoding]::UTF8)
-        $shWriter.Write($shXml)
-        $shWriter.Flush()
-        $shWriter.Close()
-
-    } finally {
-        $package.Close()
+        return $null
     }
 }
 
@@ -750,6 +724,38 @@ $captchaState = @{
 # Results collector + dedup set
 $allResults = @()
 $seenUrls = @{}
+
+# Open DDG in a minimized browser window to prime the session
+$ddgProcess = $null
+try {
+    Write-Host "[Browser] Opening DuckDuckGo to prime session..." -ForegroundColor DarkGray
+    $ddgProcess = Start-Process "https://html.duckduckgo.com/html/" -PassThru
+    Start-Sleep -Seconds 2
+    # Minimize the browser window
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $shell.MinimizeAll()  # Minimize all, then restore all except the new one
+        Start-Sleep -Milliseconds 500
+        $shell.UndoMinimizeAll()
+        # Target just the browser window by its process handle
+        Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32 {
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+        if ($ddgProcess -and -not $ddgProcess.HasExited -and $ddgProcess.MainWindowHandle -ne [IntPtr]::Zero) {
+            [Win32]::ShowWindow($ddgProcess.MainWindowHandle, 6) | Out-Null  # 6 = SW_MINIMIZE
+        }
+    } catch {
+        # Non-critical — window just won't be minimized
+        Write-Host "[Browser] Could not minimize window (non-critical)" -ForegroundColor DarkGray
+    }
+} catch {
+    Write-Host "[Browser] Could not open DuckDuckGo: $($_.Exception.Message)" -ForegroundColor DarkYellow
+}
 
 $queryNum = 0
 $scanStart = Get-Date
@@ -865,29 +871,83 @@ if ($allResults.Count -gt 0) {
     Write-Host ""
 }
 
-# Export results to Excel
+# Export results to CSV
 if ($allResults.Count -gt 0 -and -not $NoExport) {
     if (-not $OutputFile) {
         $timestamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
-        $OutputFile = Join-Path $PSScriptRoot "Look4Gold13_Results_$timestamp.xlsx"
+        $OutputFile = Join-Path $PSScriptRoot "Look4Gold13_Results_$timestamp.csv"
     }
-    if ($OutputFile -notmatch '\.xlsx$') {
-        $OutputFile += '.xlsx'
+    if ($OutputFile -notmatch '\.csv$') {
+        $OutputFile += '.csv'
     }
 
     try {
-        Export-ResultsToXlsx -Results $allResults -Path $OutputFile
-        Write-Host "[Excel export] $($allResults.Count) results saved to:" -ForegroundColor Cyan
+        $allResults | Select-Object Title, DatePublished, Summary, Url |
+            Export-Csv -Path $OutputFile -NoTypeInformation -Encoding UTF8
+        Write-Host "[CSV export] $($allResults.Count) results saved to:" -ForegroundColor Cyan
         Write-Host "  $OutputFile" -ForegroundColor White
     } catch {
-        Write-Host "[Excel export] FAILED: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "[Fallback] Saving as CSV..." -ForegroundColor Yellow
-        $csvPath = $OutputFile -replace '\.xlsx$', '.csv'
-        $allResults | Select-Object Title, DatePublished, Summary, Url |
-            Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
-        Write-Host "  CSV saved to: $csvPath" -ForegroundColor White
+        Write-Host "[CSV export] FAILED: $($_.Exception.Message)" -ForegroundColor Red
     }
     Write-Host ""
+}
+
+# Ask Sage AGI query (runs once, only if API key env var is set)
+$sageApiKey = $env:ASK_SAGE_API_KEY
+if ($sageApiKey) {
+    Write-Host "========================================" -ForegroundColor White
+    Write-Host " ASK SAGE AGI ANALYSIS" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor White
+    Write-Host ""
+
+    $sageResponse = Invoke-AskSageQuery -Keywords $keywords -ApiKey $sageApiKey -ScanResults $allResults
+
+    if ($sageResponse) {
+        # Save AGI response to text file
+        $sageTimestamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
+        $sagePath = Join-Path $PSScriptRoot "Look4Gold13_AGI_$sageTimestamp.txt"
+
+        $sageOutput = @()
+        $sageOutput += "Look4Gold13 - Ask Sage AGI Analysis"
+        $sageOutput += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        $sageOutput += "Keywords:  $($keywords -join ', ')"
+        $sageOutput += "Model:     google-gemini-2.5-pro (live web search)"
+        $sageOutput += "========================================"
+        $sageOutput += ""
+
+        if ($sageResponse.message) {
+            $sageOutput += $sageResponse.message
+            Write-Host "[Ask Sage] Response:" -ForegroundColor Cyan
+            Write-Host $sageResponse.message -ForegroundColor White
+        } else {
+            $sageOutput += ($sageResponse | ConvertTo-Json -Depth 5)
+            Write-Host "[Ask Sage] Response:" -ForegroundColor Cyan
+            Write-Host ($sageResponse | ConvertTo-Json -Depth 5) -ForegroundColor White
+        }
+
+        $sageOutput | Out-File -FilePath $sagePath -Encoding UTF8
+        Write-Host ""
+        Write-Host "[Ask Sage] Results saved to:" -ForegroundColor Cyan
+        Write-Host "  $sagePath" -ForegroundColor White
+    }
+    Write-Host ""
+} else {
+    Write-Host "[Ask Sage] Skipped - ASK_SAGE_API_KEY environment variable not set" -ForegroundColor DarkGray
+    Write-Host ""
+}
+
+# Close the DDG browser window we opened at start
+if ($ddgProcess -and -not $ddgProcess.HasExited) {
+    try {
+        $ddgProcess.CloseMainWindow() | Out-Null
+        # Give it a moment to close gracefully
+        if (-not $ddgProcess.WaitForExit(5000)) {
+            $ddgProcess.Kill()
+        }
+        Write-Host "[Browser] DuckDuckGo window closed." -ForegroundColor DarkGray
+    } catch {
+        Write-Host "[Browser] Could not close window: $($_.Exception.Message)" -ForegroundColor DarkGray
+    }
 }
 
 Write-Host "Done." -ForegroundColor Green
