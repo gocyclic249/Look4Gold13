@@ -110,9 +110,9 @@ $Script:BrowserProfiles = @(
 
 # DDG parameter variation pools
 $Script:DdgRegions = @('us-en', 'uk-en', 'au-en', 'ca-en', 'wt-wt')
-$Script:DdgDateFilters = @('', 'w', 'm')   # blank=anytime, w=past week, m=past month
+$Script:DdgDateFilters = @('none', 'w', 'm')   # none=anytime, w=past week, m=past month
 $Script:RefererPool = @(
-    $null
+    'none'
     'https://duckduckgo.com/'
     'https://html.duckduckgo.com/'
     'https://start.duckduckgo.com/'
@@ -125,7 +125,7 @@ $Script:RefererPool = @(
 function Get-RandomIdentity {
     <# Returns a fresh set of headers + WebRequestSession for one request. #>
 
-    $profile = $Script:BrowserProfiles | Get-Random
+    $profile = Get-Random -InputObject $Script:BrowserProfiles
 
     # Slight Accept-Language variation
     $langQuality = Get-Random -Minimum 5 -Maximum 10
@@ -150,8 +150,8 @@ function Get-RandomIdentity {
         $headers['Sec-Fetch-User']     = '?1'
     }
 
-    $referer = $Script:RefererPool | Get-Random
-    if ($referer) { $headers['Referer'] = $referer }
+    $referer = Get-Random -InputObject $Script:RefererPool
+    if ($referer -ne 'none') { $headers['Referer'] = $referer }
 
     # Fresh session = fresh cookie jar = no tracking between requests
     $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
@@ -183,12 +183,12 @@ function Build-DdgUrl {
     $url = "https://html.duckduckgo.com/html/?q=$encodedQuery"
 
     # Random region parameter
-    $region = $Script:DdgRegions | Get-Random
+    $region = Get-Random -InputObject $Script:DdgRegions
     if ($region -ne 'wt-wt') { $url += "&kl=$region" }
 
     # Random date filter
-    $dateFilter = $Script:DdgDateFilters | Get-Random
-    if ($dateFilter) { $url += "&df=$dateFilter" }
+    $dateFilter = Get-Random -InputObject $Script:DdgDateFilters
+    if ($dateFilter -ne 'none') { $url += "&df=$dateFilter" }
 
     return $url
 }
