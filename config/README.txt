@@ -84,11 +84,11 @@ genai.live            Enable AI web search (Ask Sage only, default: 1)
 
 search.daysBack       Days back to search (default: 30)
 search.delaySeconds   Delay between DDG requests in seconds (default: 5)
-search.sources        Sources to scan: DuckDuckGo, Breach (default: both)
+search.sources        Sources to scan: DuckDuckGo, Breach (default: DuckDuckGo only; use -IncludeBreach for both)
 search.webProxyBase   Menlo Security proxy URL (default: https://safe.menlosecurity.com)
 
 You don't need to include every setting. Only add the ones you want to
-override. Command-line parameters (-DaysBack, -Sources, etc.) override
+override. Command-line parameters (-DaysBack, -IncludeBreach, etc.) override
 both the config file and defaults.
 
 

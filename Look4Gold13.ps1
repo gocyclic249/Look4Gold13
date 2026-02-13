@@ -560,7 +560,7 @@ Write-Host "[Loading configuration]" -ForegroundColor White
 $keywords = Import-Keywords -Path $KeywordFile
 $dorks = Import-Sources -MaxDorks $MaxDorks -IncludeBreach:$IncludeBreach
 
-# Group dorks by type (site:, filetype:, text) to reduce query count
+# Group dorks by type (site:, text) to reduce query count
 $dorkGroups = @(Group-Dorks -Dorks $dorks)
 
 $totalQueries = $keywords.Count * $dorkGroups.Count

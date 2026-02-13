@@ -15,10 +15,10 @@ Copy-Item config/keywords.example.txt config/keywords.txt
 ./Look4Gold13.ps1
 
 # 3. Include breach/security-news dorks
-./Look4Gold13.ps1 -Sources DuckDuckGo,Breach
+./Look4Gold13.ps1 -IncludeBreach
 
 # 4. Custom date range
-./Look4Gold13.ps1 -DaysBack 90
+./Look4Gold13.ps1 -DaysBack 90 -IncludeBreach
 ```
 
 ## Tips
