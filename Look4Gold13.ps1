@@ -727,6 +727,38 @@ $captchaState = @{
 $allResults = @()
 $seenUrls = @{}
 
+# Open DDG in a minimized browser window to prime the session
+$ddgProcess = $null
+try {
+    Write-Host "[Browser] Opening DuckDuckGo to prime session..." -ForegroundColor DarkGray
+    $ddgProcess = Start-Process "https://html.duckduckgo.com/html/" -PassThru
+    Start-Sleep -Seconds 2
+    # Minimize the browser window
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $shell.MinimizeAll()  # Minimize all, then restore all except the new one
+        Start-Sleep -Milliseconds 500
+        $shell.UndoMinimizeAll()
+        # Target just the browser window by its process handle
+        Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32 {
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+        if ($ddgProcess -and -not $ddgProcess.HasExited -and $ddgProcess.MainWindowHandle -ne [IntPtr]::Zero) {
+            [Win32]::ShowWindow($ddgProcess.MainWindowHandle, 6) | Out-Null  # 6 = SW_MINIMIZE
+        }
+    } catch {
+        # Non-critical — window just won't be minimized
+        Write-Host "[Browser] Could not minimize window (non-critical)" -ForegroundColor DarkGray
+    }
+} catch {
+    Write-Host "[Browser] Could not open DuckDuckGo: $($_.Exception.Message)" -ForegroundColor DarkYellow
+}
+
 $queryNum = 0
 $scanStart = Get-Date
 
@@ -904,6 +936,20 @@ if ($sageApiKey) {
 } else {
     Write-Host "[Ask Sage] Skipped - ASK_SAGE_API_KEY environment variable not set" -ForegroundColor DarkGray
     Write-Host ""
+}
+
+# Close the DDG browser window we opened at start
+if ($ddgProcess -and -not $ddgProcess.HasExited) {
+    try {
+        $ddgProcess.CloseMainWindow() | Out-Null
+        # Give it a moment to close gracefully
+        if (-not $ddgProcess.WaitForExit(5000)) {
+            $ddgProcess.Kill()
+        }
+        Write-Host "[Browser] DuckDuckGo window closed." -ForegroundColor DarkGray
+    } catch {
+        Write-Host "[Browser] Could not close window: $($_.Exception.Message)" -ForegroundColor DarkGray
+    }
 }
 
 Write-Host "Done." -ForegroundColor Green
