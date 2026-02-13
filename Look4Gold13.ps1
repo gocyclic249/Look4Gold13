@@ -302,18 +302,17 @@ function Import-Sources {
 # ============================================================================
 
 function Group-Dorks {
-    <# Groups flat dork array into combined OR query groups by type. #>
+    <# Groups flat dork array into combined OR query groups by type.
+       Site dorks are batched (max 5 per group) to avoid DDG query length limits. #>
     param([Parameter(Mandatory)][array]$Dorks)
 
-    $siteGroup  = @{ GroupLabel = 'Sites'; Dorks = @(); Labels = @(); Mappings = @() }
+    $siteDorks  = @()
     $textGroups = @()
 
     foreach ($d in $Dorks) {
         if ($d.Dork -match '^site:(.+)$') {
-            $siteGroup.Dorks   += $d.Dork
-            $siteGroup.Labels  += $d.Label
             $domain = ($Matches[1] -replace '\.', '\.') -replace '/', '\/'
-            $siteGroup.Mappings += @{ Label = $d.Label; Pattern = $domain }
+            $siteDorks += @{ Dork = $d.Dork; Label = $d.Label; Pattern = $domain }
         }
         else {
             $textGroups += @{
@@ -328,13 +327,27 @@ function Group-Dorks {
 
     $groups = @()
 
-    if ($siteGroup.Dorks.Count -gt 0) {
-        if ($siteGroup.Dorks.Count -eq 1) {
-            $siteGroup['CombinedDork'] = $siteGroup.Dorks[0]
-        } else {
-            $siteGroup['CombinedDork'] = '(' + ($siteGroup.Dorks -join ' OR ') + ')'
+    # Split site dorks into batches of 5 to keep query URLs short
+    $batchSize = 5
+    if ($siteDorks.Count -gt 0) {
+        for ($i = 0; $i -lt $siteDorks.Count; $i += $batchSize) {
+            $end = [math]::Min($i + $batchSize - 1, $siteDorks.Count - 1)
+            $batch = $siteDorks[$i..$end]
+
+            $batchGroup = @{
+                GroupLabel = "Sites $([math]::Floor($i / $batchSize) + 1)"
+                Dorks      = @($batch | ForEach-Object { $_.Dork })
+                Labels     = @($batch | ForEach-Object { $_.Label })
+                Mappings   = @($batch | ForEach-Object { @{ Label = $_.Label; Pattern = $_.Pattern } })
+            }
+
+            if ($batchGroup.Dorks.Count -eq 1) {
+                $batchGroup['CombinedDork'] = $batchGroup.Dorks[0]
+            } else {
+                $batchGroup['CombinedDork'] = '(' + ($batchGroup.Dorks -join ' OR ') + ')'
+            }
+            $groups += $batchGroup
         }
-        $groups += $siteGroup
     }
 
     $groups += $textGroups
