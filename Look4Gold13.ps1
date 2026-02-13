@@ -669,7 +669,7 @@ Please search for any recent cyber security news, breaches, leaks, vulnerabiliti
     Write-Host "[Ask Sage] This may take a moment (live web search enabled)..." -ForegroundColor DarkGray
 
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body -TimeoutSec 120
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
         Write-Host "[Ask Sage] Response received." -ForegroundColor Green
         return $response
     } catch {
@@ -758,6 +758,23 @@ try {
     }
 
     Start-Sleep -Seconds 2
+
+    # Minimize the browser window for the fallback path
+    if ($ddgProcess -and -not $ddgProcess.HasExited) {
+        try {
+            Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32 {
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+            if ($ddgProcess.MainWindowHandle -ne [IntPtr]::Zero) {
+                [Win32]::ShowWindow($ddgProcess.MainWindowHandle, 6) | Out-Null  # 6 = SW_MINIMIZE
+            }
+        } catch { }
+    }
 } catch {
     Write-Host "[Browser] Could not open DuckDuckGo: $($_.Exception.Message)" -ForegroundColor DarkYellow
 }
