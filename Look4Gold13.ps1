@@ -229,7 +229,7 @@ function Import-Keywords {
     param([string]$Path)
 
     if (-not $Path) {
-        $Path = Join-Path $PSScriptRoot 'config' 'keywords.txt'
+        $Path = Join-Path (Join-Path $PSScriptRoot 'config') 'keywords.txt'
     }
 
     if (-not (Test-Path $Path)) {
@@ -258,7 +258,7 @@ function Import-Sources {
     )
 
     if (-not $Path) {
-        $Path = Join-Path $PSScriptRoot 'config' 'sources.json'
+        $Path = Join-Path (Join-Path $PSScriptRoot 'config') 'sources.json'
     }
 
     if (-not (Test-Path $Path)) {
