@@ -21,29 +21,22 @@ IMPORTANT: Choose keywords carefully. Do not include classified or
 controlled information. See keywords.example.txt for format examples.
 
 
-GENAI CONFIG FILE (au13-config.json)
+ASK SAGE API KEY
 ------------------------------------
-The config file is optional. Without it, the script uses built-in defaults.
-If present, settings in the config override matching defaults.
+The AGI query is optional. If the ASK_SAGE_API_KEY environment variable
+is set, the script sends your keywords to Ask Sage for AI-powered analysis
+with severity ratings. Without it, you still get all the dork results.
 
 Setup:
-  1. Copy the example matching your GenAI provider:
+  1. Get an API key from:
+       https://api.genai.army.mil > Settings > Account > Manage API Keys
 
-     For Ask Sage (army.mil):
-       Copy-Item config/au13-config.example.asksage.json config/au13-config.json
+  2. Set the environment variable:
+       $env:ASK_SAGE_API_KEY = "your-key-here"
 
-     For Grok (xAI):
-       Copy-Item config/au13-config.example.grok.json config/au13-config.json
-
-  2. au13-config.json is gitignored - it will never be committed.
-
-  3. Set your API token as an environment variable:
-       [System.Environment]::SetEnvironmentVariable("GENAI_API_TOKEN", "your-key", "User")
+     Or set it permanently (persists across sessions):
+       [System.Environment]::SetEnvironmentVariable("ASK_SAGE_API_KEY", "your-key", "User")
        # Restart PowerShell after setting this
-
-API Key Sources:
-  - Ask Sage: https://api.genai.army.mil > Settings > Account > Manage API Keys
-  - Grok/xAI: https://console.x.ai/
 
 
 SEARCH SOURCES FILE (sources.json)
@@ -66,38 +59,54 @@ Sections:
   ddgDorks      DuckDuckGo search dorks including paste sites (label + dork query string)
   breachDorks   Breach/security news dorks (label + dork query string)
 
+Both groups are always included in every scan. Breach dorks run first
+since they tend to be the most actionable. Site dorks are automatically
+batched into groups of 5 to avoid DDG query length limits.
+
 Example - adding a custom DDG dork:
   Copy the full ddgDorks array from sources.example.json, then append:
     { "label": "My internal site", "dork": "site:internal.example.com" }
 
 
-SETTINGS REFERENCE
+SCRIPT PARAMETERS
 ------------------------------------
-genai.endpoint        API endpoint URL
-genai.tokenEnvVar     Environment variable holding the API key (default: GENAI_API_TOKEN)
-genai.model           Model for summarization (default: google-gemini-2.5-pro)
-genai.apiType         Set to "openai-compatible" for Grok/xAI; omit for Ask Sage
-genai.persona         Ask Sage persona ID (Ask Sage only, default: 5)
-genai.temperature     Response creativity 0.0-1.0 (default: 0.7)
-genai.limit_references  Max AI references (Ask Sage only, default: 5)
-genai.live            Enable AI web search (Ask Sage only, default: 1)
+-KeywordFile     Path to keywords file (default: config/keywords.txt)
+-MaxDorks        Limit to first N dorks; 0 = all (default: 0)
+-BaseDelay       Base seconds between DDG requests (default: 60)
+-MinJitter       Min random seconds added to delay (default: 5)
+-MaxJitter       Max random seconds added to delay (default: 15)
+-VerboseOutput   Show extra debug info
+-OutputFile      Custom path for CSV export
+-NoExport        Suppress all file output (CSV, JSON, HTML)
+-Silent          Suppress all console output (files still written)
 
-search.daysBack       Days back to search (default: 30)
-search.delaySeconds   Delay between DDG requests in seconds (default: 5)
-search.sources        Sources to scan: DuckDuckGo and Breach dorks (both always included)
-search.webProxyBase   Menlo Security proxy URL (default: https://safe.menlosecurity.com)
 
-You don't need to include every setting. Only add the ones you want to
-override. Command-line parameters (-MaxDorks, -BaseDelay, etc.) override
-both the config file and defaults.
+OUTPUT FILES
+------------------------------------
+Look4Gold13_Report_<timestamp>.html   Combined HTML report (AGI + dork results)
+Look4Gold13_AGI_<timestamp>.json      Structured AGI results with severity
+Look4Gold13_Results_<timestamp>.csv   Flat dork results (Title, Summary, URL)
+
+
+ASK SAGE SETTINGS (for advanced users)
+------------------------------------
+These settings are hardcoded in the script but documented here for reference:
+
+  Endpoint:     https://api.genai.army.mil/server/query
+  Model:        google-gemini-2.5-pro
+  Persona:      0 (blank - no persona preamble)
+  Temperature:  0.7
+  Live search:  2 (live web search enabled)
+
+The AGI prompt requests a JSON array with severity ratings
+(Critical, High, Medium, Low, Informational) for each finding.
 
 
 FILES IN THIS FOLDER
 ------------------------------------
 README.txt                        This file
-au13-config.example.asksage.json  Ask Sage config template
-au13-config.example.grok.json     Grok (xAI) config template
-au13-config.json                  Your config (gitignored, create from example)
+au13-config.example.asksage.json  Ask Sage config template (reference)
+au13-config.example.grok.json     Grok (xAI) config template (reference)
 keywords.example.txt              Starter keywords with example phrases
 keywords.txt                      Your keywords (gitignored, create from example)
 sources.json                      Search dorks and paste site config (editable)
