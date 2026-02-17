@@ -2,7 +2,7 @@
 
 **AU-13 Publicly Available Content (PAC) scanner for NIST SP 800-53 compliance.**
 
-Look4Gold13 automates the process of searching for your organization's publicly exposed information across the internet. It combines DuckDuckGo search dorking with AGI-powered intelligence gathering (via Ask Sage) to find leaked credentials, breached data, exposed documents, misconfigured cloud resources, and more. Results are compiled into an HTML report with severity ratings.
+Look4Gold13 automates the process of searching for your organization's publicly exposed information across the internet. It combines DuckDuckGo search dorking with GenAI-powered intelligence gathering (via Ask Sage) to find leaked credentials, breached data, exposed documents, misconfigured cloud resources, and more. Results are compiled into an HTML report with severity ratings.
 
 ---
 
@@ -10,12 +10,14 @@ Look4Gold13 automates the process of searching for your organization's publicly 
 
 1. **Search Dorking** -- Takes your keywords (company names, domains, project names, etc.) and combines them with a library of search dorks targeting paste sites, code repos, breach databases, and security news sources. Each keyword is searched against every dork via DuckDuckGo.
 
-2. **AGI Intelligence** -- If an Ask Sage API key is configured, a **separate AGI query runs for each keyword** immediately after that keyword's dork searches complete. Each query sends the keyword (along with any URLs discovered during its dorking) to a Gemini 2.5 Flash model with live web search enabled. The AGI searches broadly across the internet for recent cyber security events and assigns a severity rating (Critical, High, Medium, Low, or Informational) to each finding. Running per-keyword gives the AGI more focused results than a single combined query.
+2. **GenAI Intelligence** -- If an Ask Sage API key is configured, a **separate GenAI query runs for each keyword** immediately after that keyword's dork searches complete. Each query sends the keyword (along with any URLs discovered during its dorking) to a Gemini 2.5 Flash model with live web search enabled. The GenAI searches broadly across the internet for recent cyber security events and assigns a severity rating (Critical, High, Medium, Low, or Informational) to each finding. Running per-keyword gives the GenAI more focused results than a single combined query.
 
 3. **Reporting** -- All results are compiled into three output files:
-   - **HTML Report** (`Look4Gold13_Report_<timestamp>.html`) -- A styled, dark-themed report organized by keyword. Each keyword section shows its AGI findings (with color-coded severity badges) followed by its dork results. This is the primary deliverable.
-   - **JSON** (`Look4Gold13_AGI_<timestamp>.json`) -- Structured AGI results with metadata, suitable for ingestion into other tools or SIEMs.
+   - **HTML Report** (`Look4Gold13_Report_<timestamp>.html`) -- A styled, dark-themed report organized by keyword. Each keyword section shows its GenAI findings (with color-coded severity badges) followed by its dork results. This is the primary deliverable.
+   - **JSON** (`Look4Gold13_AGI_<timestamp>.json`) -- Structured GenAI results with metadata, suitable for ingestion into other tools or SIEMs.
    - **CSV** (`Look4Gold13_Results_<timestamp>.csv`) -- Flat export of all dork results (Title, Summary, URL).
+
+**Note:** Some variable names, parameter flags (e.g., `-AgiOnly`), and output filenames (e.g., `Look4Gold13_AGI_*.json`) still use "AGI" instead of "GenAI". This is a naming mix-up from early development — the feature uses generative AI (GenAI), not artificial general intelligence (AGI). The code-level names are kept as-is to avoid breaking changes.
 
 ---
 
@@ -35,16 +37,16 @@ Copy-Item config/keywords.example.txt config/keywords.txt
 # 4. Run silently (no console output, files only)
 .\Look4Gold13.ps1 -Silent
 
-# 5. AGI-only mode (skip dork scanning, just Ask Sage)
+# 5. GenAI-only mode (skip dork scanning, just Ask Sage)
 .\Look4Gold13.ps1 -AgiOnly
 
 # 6. Custom timing (slower to be gentler on DDG)
 .\Look4Gold13.ps1 -BaseDelay 90 -MinJitter 10 -MaxJitter 30
 ```
 
-### Ask Sage (AGI) Setup
+### Ask Sage (GenAI) Setup
 
-The AGI query is optional but recommended. Without it you still get all the dork results; with it you get an additional layer of AI-driven intelligence.
+The GenAI query is optional but recommended. Without it you still get all the dork results; with it you get an additional layer of AI-driven intelligence.
 
 ```powershell
 # Set your Ask Sage API key (get one from https://api.genai.army.mil > Settings > Account > Manage API Keys)
@@ -57,7 +59,7 @@ $env:ASK_SAGE_API_KEY = "your-api-key-here"
 
 ### Custom Persona (Recommended)
 
-For best results, create a custom persona in Ask Sage named exactly **Look4Gold13**. The script automatically looks up this persona by name via the `get-personas` API and uses it for AGI queries. If not found, it falls back to the built-in ISSO (Cyber) persona (ID 5).
+For best results, create a custom persona in Ask Sage named exactly **Look4Gold13**. The script automatically looks up this persona by name via the `get-personas` API and uses it for GenAI queries. If not found, it falls back to the built-in ISSO (Cyber) persona (ID 5).
 
 **To create the persona:**
 
@@ -81,9 +83,9 @@ You provide accurate answers, but if you are asked a question that is nonsense, 
 
 The script calls the `get-personas` API on each run to resolve the ID automatically -- just create the persona and go.
 
-### AGI-Only Mode
+### GenAI-Only Mode
 
-To skip dork scanning and run only the Ask Sage AGI query:
+To skip dork scanning and run only the Ask Sage GenAI query:
 
 ```powershell
 .\Look4Gold13.ps1 -AgiOnly
@@ -154,7 +156,7 @@ If DDG does return a CAPTCHA despite all precautions, the script doesn't just gi
 1. It detects the CAPTCHA (HTTP 202, "anomaly-modal", "automated requests" text, etc.)
 2. Applies exponential backoff: 60s, then 120s, then 240s, up to 480s
 3. Retries with a completely fresh identity and rebuilt URL
-4. If the retry also hits a CAPTCHA, it halts DDG queries for this keyword (but still runs the per-keyword AGI query with whatever results were collected, and continues to subsequent keywords)
+4. If the retry also hits a CAPTCHA, it halts DDG queries for this keyword (but still runs the per-keyword GenAI query with whatever results were collected, and continues to subsequent keywords)
 
 ---
 
@@ -171,7 +173,7 @@ If DDG does return a CAPTCHA despite all precautions, the script doesn't just gi
 | `-OutputFile` | string | auto-timestamped | Custom path for the CSV export |
 | `-NoExport` | switch | off | Suppress all file output (CSV, JSON, HTML) |
 | `-Silent` | switch | off | Suppress all console output. Files are still written |
-| `-AgiOnly` | switch | off | Skip dork scanning, run only the Ask Sage AGI query |
+| `-AgiOnly` | switch | off | Skip dork scanning, run only the Ask Sage GenAI query |
 
 ---
 
@@ -184,7 +186,7 @@ Scan duration depends on the number of keywords, the number of dork groups, and 
 | Phase | Time | Notes |
 |---|---|---|
 | DDG dork searches | ~28 min | 13 query groups x ~130s average delay |
-| Ask Sage AGI query | ~30 sec | Single API call with live web search |
+| Ask Sage GenAI query | ~30 sec | Single API call with live web search |
 | **Total per keyword** | **~28-29 min** | |
 
 **Multi-keyword examples:**
@@ -199,7 +201,7 @@ Scan duration depends on the number of keywords, the number of dork groups, and 
 
 **Tips for faster scans:**
 - Use `-MaxDorks N` to limit to the first N dorks (e.g., `-MaxDorks 4` runs only 4 groups)
-- Use `-AgiOnly` to skip dork scanning entirely (just the AGI intelligence query)
+- Use `-AgiOnly` to skip dork scanning entirely (just the GenAI intelligence query)
 - Lower `-BaseDelay` to reduce wait time between queries (increases CAPTCHA risk)
 
 The script displays its own time estimate at the start of each run based on your actual parameters.
@@ -212,8 +214,8 @@ All output files are written to the script's directory with timestamps in the fi
 
 | File | Format | Contents |
 |---|---|---|
-| `Look4Gold13_Report_<timestamp>.html` | HTML | Report organized by keyword -- each section shows AGI findings (with severity badges) then dork results. Open in any browser. |
-| `Look4Gold13_AGI_<timestamp>.json` | JSON | Structured AGI results tagged by keyword: `{ metadata: {...}, results: [{keyword, severity, title, summary, link, ...}] }` |
+| `Look4Gold13_Report_<timestamp>.html` | HTML | Report organized by keyword -- each section shows GenAI findings (with severity badges) then dork results. Open in any browser. |
+| `Look4Gold13_AGI_<timestamp>.json` | JSON | Structured GenAI results tagged by keyword: `{ metadata: {...}, results: [{keyword, severity, title, summary, link, ...}] }` |
 | `Look4Gold13_Results_<timestamp>.csv` | CSV | Flat dork results: Title, Summary, URL |
 
 ---
@@ -262,11 +264,11 @@ You can edit `sources.json` directly to add or remove dorks. See `sources.exampl
 4. **Resolve persona** -- If `ASK_SAGE_API_KEY` is set, look up the "Look4Gold13" custom persona once.
 5. **Per-keyword loop** -- For each keyword:
    - **Dork searches** -- Execute each dork group query with fresh browser identity, parse results, wait a randomized delay.
-   - **AGI query** -- Send the keyword and its discovered URLs to Ask Sage for AI-powered analysis with severity ratings.
+   - **GenAI query** -- Send the keyword and its discovered URLs to Ask Sage for AI-powered analysis with severity ratings.
 6. **Collect and deduplicate** -- Results are deduplicated by keyword+URL.
 7. **Export CSV** -- Dork results are saved to a CSV file.
-8. **Export JSON** -- AGI results (tagged by keyword) are saved as structured JSON.
-9. **Generate HTML report** -- Results are organized by keyword, each section showing AGI findings then dork results.
+8. **Export JSON** -- GenAI results (tagged by keyword) are saved as structured JSON.
+9. **Generate HTML report** -- Results are organized by keyword, each section showing GenAI findings then dork results.
 10. **Cleanup** -- The DDG browser window is closed.
 
 ---
@@ -289,7 +291,7 @@ You can edit `sources.json` directly to add or remove dorks. See `sources.exampl
 # Custom output location
 .\Look4Gold13.ps1 -OutputFile "C:\reports\scan-results.csv"
 
-# AGI-only: just the Ask Sage intelligence query
+# GenAI-only: just the Ask Sage intelligence query
 .\Look4Gold13.ps1 -AgiOnly
 
 # Maximum stealth: slow and steady (default is already 120s base)
