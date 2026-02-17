@@ -63,7 +63,7 @@ For best results, create a custom persona in Ask Sage named exactly **Look4Gold1
 
 **To create the persona:**
 
-1. Go to https://api.genai.army.mil
+1. Go to https://chat.genai.army.mil/
 2. Navigate to **Settings > Personas > Create New Persona**
 3. Name it exactly: `Look4Gold13`
 4. Paste the following preamble into the persona instructions:
