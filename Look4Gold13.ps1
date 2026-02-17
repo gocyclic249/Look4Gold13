@@ -619,7 +619,7 @@ function Get-AskSagePersonaId {
 
     try {
         $personas = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers
-        $match = $personas | Where-Object { $_.name -eq "Look4Gold13" }
+        $match = $personas.response | Where-Object { $_.name -eq "Look4Gold13" }
         if ($match) {
             Write-Host "[Ask Sage] Using custom persona 'Look4Gold13' (ID: $($match.id))" -ForegroundColor Cyan
             return [int]$match.id
