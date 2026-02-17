@@ -632,18 +632,22 @@ function Invoke-AskSageQuery {
 
     $body = @{
         message     = @"
-Please search for any recent cyber security news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Search broadly across the internet — do not limit yourself to specific sites. Provide a link to every article or site referenced. For each entry, assess the severity as Critical, High, Medium, Low, or Informational based on the potential impact. Format response as JSON array. Use the following format for each entry:
-{
-  "date_published":
-  "source_site":
-  "category":
-  "severity":
-  "title":
-  "summary":
-  "link":
-}$scanContext
+Search for any recent cyber security news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Search broadly across the internet. Provide a link to every article or site referenced. For each entry, assess the severity as Critical, High, Medium, Low, or Informational based on the potential impact.
+
+Respond with ONLY a JSON array, no other text before or after it. Use this exact format for each entry:
+[
+  {
+    "date_published": "YYYY-MM-DD",
+    "source_site": "example.com",
+    "category": "Vulnerability|Breach|Ransomware|Leak|Informational",
+    "severity": "Critical|High|Medium|Low|Informational",
+    "title": "Short descriptive title",
+    "summary": "Brief summary of the event",
+    "link": "https://full-url-to-source"
+  }
+]$scanContext
 "@
-        persona     = 5
+        persona     = 0
         model       = "google-gemini-2.5-pro"
         temperature = 0.7
         live        = 2
