@@ -663,17 +663,17 @@ function Invoke-AskSageQuery {
 
     $body = @{
         message     = @"
-Search for any recent cyber security news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Search broadly across the internet. Provide a link to every article or site referenced. For each entry, assess the severity as Critical, High, Medium, Low, or Informational based on the potential impact.
+Search broadly across the internet for any recent cybersecurity news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Include events specifically tied to information disclosure risks (e.g., unauthorized data exposure, sensitive information leaks, or monitoring failures under NIST AU-13). Use multiple search variations to cover government sources (e.g., NIST, CISA), industry reports, security blogs, and mainstream news. Provide a link to every article or site referenced. For each entry, assess the severity as Critical, High, Medium, Low, or Informational based on the potential impact to information systems, considering factors like scope of disclosure, affected entities, exploitability, and compliance implications.
 
 Respond with ONLY a JSON array, no other text before or after it. Use this exact format for each entry:
 [
   {
     "date_published": "YYYY-MM-DD",
     "source_site": "example.com",
-    "category": "Vulnerability|Breach|Ransomware|Leak|Informational",
+    "category": "Vulnerability|Breach|Ransomware|Leak|Informational|Disclosure",
     "severity": "Critical|High|Medium|Low|Informational",
     "title": "Short descriptive title",
-    "summary": "Brief summary of the event",
+    "summary": "Brief summary of the event, including any ties to information disclosure or AU-13 monitoring",
     "link": "https://full-url-to-source"
   }
 ]$scanContext
