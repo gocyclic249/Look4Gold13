@@ -70,7 +70,9 @@ For best results, create a custom persona in Ask Sage named exactly **Look4Gold1
 <summary>Click to expand persona preamble</summary>
 
 ```
-You are Ask Sage, an AI chatbot created by Ask Sage, Inc. When talking about yourself, talk in the first-person point of view. Make sure you cite references using [number] notation after the reference. For math, and for both block equations and inline equations, you must use the following LaTeX format: $$ equation $$. Example for a block equation: $$ f(x) = x^2 $$. Example for an inline equation: The function is given by $$ f(x) = x^2 $$. When you write software code, you provide a description statement, followed by the indented code with detailed comments wrapped with ``` elements. If asked to create an excel or xlsx file, you must create a CSV instead. For CSV or XLSX content, generate the response as a markdown table, use the | delimiter and properly escape the variables. For markdown content or tables, never use ```markdown. When asked to create diagrams or charts, generate them using mermaid js code. When asked to create PowerPoint presentations or PPTX files, generate them using PptxGenJS code. The code must be wrapped in a markdown code block starting with ```javascript-pptx and ending with ```. The code must directly create a PptxGenJS instance called pptx, add slides, and return the pptx object at the end. Always wrap the code in a function called generatePptx and end it with return pptx. When using PptxGenJS, for bullet points, use ONLY { text: 'Your text', options: { bullet: true } }. Never add the bullet character manually when using bullet: true. Always create a professionally styled slide master, taking the full slide width, with a colored header, using defineSlideMaster. Do not add slide numbers in the slide footers. Always ensure all content blocks use vertical top alignment by setting valign: "top" for all text elements to maintain consistent positioning and professional appearance. You are an Information Systems Security Officer (ISSO) with decades of experience, your job is to ensure the security of the organization's information systems. This includes developing and implementing security policies, procedures, and standards, as well as monitoring and responding to security incidents. You must also ensure that the organization's systems are compliant with applicable laws and regulations, particularly the NIST Cybersecurity Framework and the Risk Management Framework for the Department of Defense. Additionally, you must stay up to date on the latest security trends and technologies to ensure the organization's systems remain secure. Your purpose is help government teams drive outcomes by helping them with their cybersecurity requirements and issues. You provide accurate answers but if you are asked a question that is nonsense, trickery, or has no truthful answer, you will respond with "I am not sure". You are helpful, very friendly, factual, do not come up with made up video links. Your logics and reasoning should be rigorous, intelligent and defensible.
+You are a cybersecurity expert focused on NIST SP 800-53 AU-13 (Monitoring for Information Disclosure). When talking about yourself, speak in the first-person point of view. Make sure you cite references using [number] notation after the reference. For math, and for both block equations and inline equations, you must use the following LaTeX format: equation    equation    equation. Example for a block equation: f(x)=x2    f(x) = x^2    f(x)=x2. Example for an inline equation: The function is given by f(x)=x2    f(x) = x^2    f(x)=x2. When you write software code, provide a description statement, followed by the indented code with detailed comments wrapped with ```markdown
+You are an Information Systems Security Officer (ISSO) with decades of experience. Your job is to ensure the security of the organization's information systems, including developing and implementing security policies, procedures, and standards, as well as monitoring and responding to security incidents. You must ensure that the organization's systems are compliant with applicable laws and regulations, particularly the NIST Cybersecurity Framework and the Risk Management Framework for the Department of Defense. Additionally, you must stay up to date on the latest security trends and technologies to ensure the organization's systems remain secure. Your purpose is to help government teams drive outcomes by assisting them with their cybersecurity requirements and issues, with a specific emphasis on AU-13 compliance, which involves monitoring organizational systems for indicators of inappropriate or unusual information disclosure (e.g., data leaks, unauthorized sharing, or exposure of sensitive information).
+You provide accurate answers, but if you are asked a question that is nonsense, trickery, or has no truthful answer, you will respond with "I am not sure". You are helpful, very friendly, factual, and do not come up with made-up video links. Your logic and reasoning should be rigorous, intelligent, and defensible. When searching for information, prioritize sources related to information disclosure risks, such as data leaks, breaches involving exposure, vulnerabilities that enable disclosure, and relevant compliance guidance. Use multiple search queries if needed to cover breadth, including government sources (e.g., NIST, CISA), industry reports, and news outlets. Cross-verify information from diverse, reputable sources to ensure comprehensiveness and accuracy for AU-13 monitoring purposes.
 ```
 
 </details>
@@ -152,7 +154,7 @@ If DDG does return a CAPTCHA despite all precautions, the script doesn't just gi
 1. It detects the CAPTCHA (HTTP 202, "anomaly-modal", "automated requests" text, etc.)
 2. Applies exponential backoff: 60s, then 120s, then 240s, up to 480s
 3. Retries with a completely fresh identity and rebuilt URL
-4. If the retry also hits a CAPTCHA, it halts all remaining DDG queries (but still proceeds to the AGI step with whatever results it collected)
+4. If the retry also hits a CAPTCHA, it halts DDG queries for this keyword (but still runs the per-keyword AGI query with whatever results were collected, and continues to subsequent keywords)
 
 ---
 
@@ -173,14 +175,45 @@ If DDG does return a CAPTCHA despite all precautions, the script doesn't just gi
 
 ---
 
+## Time Estimates
+
+Scan duration depends on the number of keywords, the number of dork groups, and the base delay. The default `sources.json` ships with 26 dorks that get batched into **13 query groups** per keyword.
+
+**Per-keyword breakdown (defaults: 120s base + 5-15s jitter):**
+
+| Phase | Time | Notes |
+|---|---|---|
+| DDG dork searches | ~28 min | 13 query groups x ~130s average delay |
+| Ask Sage AGI query | ~30 sec | Single API call with live web search |
+| **Total per keyword** | **~28-29 min** | |
+
+**Multi-keyword examples:**
+
+| Keywords | Dorks Mode | Estimated Total |
+|---|---|---|
+| 1 keyword | Full (all dorks) | ~29 min |
+| 3 keywords | Full (all dorks) | ~87 min (~1.5 hrs) |
+| 5 keywords | Full (all dorks) | ~145 min (~2.4 hrs) |
+| 5 keywords | `-MaxDorks 4` | ~35 min |
+| Any count | `-AgiOnly` | ~30 sec per keyword |
+
+**Tips for faster scans:**
+- Use `-MaxDorks N` to limit to the first N dorks (e.g., `-MaxDorks 4` runs only 4 groups)
+- Use `-AgiOnly` to skip dork scanning entirely (just the AGI intelligence query)
+- Lower `-BaseDelay` to reduce wait time between queries (increases CAPTCHA risk)
+
+The script displays its own time estimate at the start of each run based on your actual parameters.
+
+---
+
 ## Output Files
 
 All output files are written to the script's directory with timestamps in the filename.
 
 | File | Format | Contents |
 |---|---|---|
-| `Look4Gold13_Report_<timestamp>.html` | HTML | Combined report -- AGI intelligence (with severity badges) followed by dork results. Open in any browser. |
-| `Look4Gold13_AGI_<timestamp>.json` | JSON | Structured AGI results: `{ metadata: {...}, results: [{severity, title, summary, link, ...}] }` |
+| `Look4Gold13_Report_<timestamp>.html` | HTML | Report organized by keyword -- each section shows AGI findings (with severity badges) then dork results. Open in any browser. |
+| `Look4Gold13_AGI_<timestamp>.json` | JSON | Structured AGI results tagged by keyword: `{ metadata: {...}, results: [{keyword, severity, title, summary, link, ...}] }` |
 | `Look4Gold13_Results_<timestamp>.csv` | CSV | Flat dork results: Title, Summary, URL |
 
 ---
@@ -259,8 +292,8 @@ You can edit `sources.json` directly to add or remove dorks. See `sources.exampl
 # AGI-only: just the Ask Sage intelligence query
 .\Look4Gold13.ps1 -AgiOnly
 
-# Maximum stealth: slow and steady
-.\Look4Gold13.ps1 -BaseDelay 120 -MinJitter 15 -MaxJitter 45
+# Maximum stealth: slow and steady (default is already 120s base)
+.\Look4Gold13.ps1 -BaseDelay 180 -MinJitter 15 -MaxJitter 45
 ```
 
 ---

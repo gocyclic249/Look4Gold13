@@ -6,9 +6,13 @@
     publicly exposed information (NIST SP 800-53 AU-13 compliance).
     Uses aggressive rate-limit evasion: UA rotation, session rotation,
     randomized timing, and query parameter variation.
+
+    For each keyword the scan runs:  dork searches -> Ask Sage AGI query.
+    This per-keyword flow gives the AGI focused context from that keyword's
+    dork results rather than mixing all keywords into one query.
 .EXAMPLE
     .\Look4Gold13.ps1 -MaxDorks 4
-    .\Look4Gold13.ps1 -MaxDorks 1 -BaseDelay 90
+    .\Look4Gold13.ps1 -MaxDorks 1 -BaseDelay 150
     .\Look4Gold13.ps1 -Silent
     .\Look4Gold13.ps1 -AgiOnly
 #>
@@ -601,12 +605,13 @@ function Invoke-DdgSearch {
 }
 
 # ============================================================================
-# ASK SAGE AGI QUERY
+# ASK SAGE AGI QUERY  (called once per keyword during the main scan loop)
 # ============================================================================
 
 function Get-AskSagePersonaId {
     <# Looks up the "Look4Gold13" persona by name via the Ask Sage API.
-       Returns the persona ID if found, otherwise falls back to 5 (ISSO). #>
+       Returns the persona ID if found, otherwise falls back to 5 (ISSO).
+       Called once before the per-keyword loop. #>
     param(
         [Parameter(Mandatory)][string]$ApiKey
     )
@@ -633,7 +638,8 @@ function Get-AskSagePersonaId {
 }
 
 function Invoke-AskSageQuery {
-    <# Sends a single query to the Ask Sage API using keywords and scan results.
+    <# Sends a per-keyword query to the Ask Sage API (Gemini 2.5 Flash, live web search).
+       Includes any dork-discovered URLs as context for that keyword.
        Returns the parsed response or $null on failure. #>
     param(
         [Parameter(Mandatory)][array]$Keywords,
@@ -663,17 +669,17 @@ function Invoke-AskSageQuery {
 
     $body = @{
         message     = @"
-Search for any recent cyber security news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Search broadly across the internet. Provide a link to every article or site referenced. For each entry, assess the severity as Critical, High, Medium, Low, or Informational based on the potential impact.
+Search broadly across the internet for any recent cybersecurity news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Include events specifically tied to information disclosure risks (e.g., unauthorized data exposure, sensitive information leaks, or monitoring failures under NIST AU-13). Use multiple search variations to cover government sources (e.g., NIST, CISA), industry reports, security blogs, and mainstream news. Provide a link to every article or site referenced. For each entry, assess the severity as Critical, High, Medium, Low, or Informational based on the potential impact to information systems, considering factors like scope of disclosure, affected entities, exploitability, and compliance implications.
 
 Respond with ONLY a JSON array, no other text before or after it. Use this exact format for each entry:
 [
   {
     "date_published": "YYYY-MM-DD",
     "source_site": "example.com",
-    "category": "Vulnerability|Breach|Ransomware|Leak|Informational",
+    "category": "Vulnerability|Breach|Ransomware|Leak|Informational|Disclosure",
     "severity": "Critical|High|Medium|Low|Informational",
     "title": "Short descriptive title",
-    "summary": "Brief summary of the event",
+    "summary": "Brief summary of the event, including any ties to information disclosure or AU-13 monitoring",
     "link": "https://full-url-to-source"
   }
 ]$scanContext
@@ -818,7 +824,7 @@ public class Win32 {
 
 } # end if (-not $AgiOnly) setup
 
-# Resolve persona once if API key is set
+# Resolve persona once before the per-keyword loop
 $sageApiKey = $env:ASK_SAGE_API_KEY
 $personaId = 5
 if ($sageApiKey) {
@@ -996,7 +1002,7 @@ if ($allResults.Count -gt 0 -and -not $NoExport) {
 }
 } # end if (-not $AgiOnly) summary
 
-# Flatten per-keyword AGI results and export JSON
+# Flatten per-keyword AGI results (tagged with keyword) and export JSON
 $sageItems = @()
 if ($allSageResults.Count -gt 0) {
     foreach ($kw in $allSageResults.Keys) {
