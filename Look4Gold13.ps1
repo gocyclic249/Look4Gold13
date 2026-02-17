@@ -15,7 +15,7 @@
 param(
     [string]$KeywordFile,
     [int]$MaxDorks       = 0,       # 0 = all dorks; N = use first N only
-    [int]$BaseDelay      = 60,      # Base seconds between requests
+    [int]$BaseDelay      = 120,     # Base seconds between requests
     [int]$MinJitter      = 5,       # Min additional random seconds
     [int]$MaxJitter      = 15,      # Max additional random seconds
     [switch]$VerboseOutput,         # Extra debug output
@@ -679,7 +679,7 @@ Respond with ONLY a JSON array, no other text before or after it. Use this exact
 ]$scanContext
 "@
         persona     = $PersonaId
-        model       = "google-gemini-2.5-pro"
+        model       = "google-gemini-2.5-flash"
         temperature = 0.7
         live        = 2
     } | ConvertTo-Json -Depth 3
@@ -1015,7 +1015,7 @@ if ($allSageResults.Count -gt 0) {
                 tool       = "Look4Gold13"
                 generated  = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
                 keywords   = $keywords
-                model      = "google-gemini-2.5-pro"
+                model      = "google-gemini-2.5-flash"
             }
             results = $sageItems
         }

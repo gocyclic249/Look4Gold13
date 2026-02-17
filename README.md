@@ -10,7 +10,7 @@ Look4Gold13 automates the process of searching for your organization's publicly 
 
 1. **Search Dorking** -- Takes your keywords (company names, domains, project names, etc.) and combines them with a library of search dorks targeting paste sites, code repos, breach databases, and security news sources. Each keyword is searched against every dork via DuckDuckGo.
 
-2. **AGI Intelligence** -- If an Ask Sage API key is configured, a **separate AGI query runs for each keyword** immediately after that keyword's dork searches complete. Each query sends the keyword (along with any URLs discovered during its dorking) to a Gemini 2.5 Pro model with live web search enabled. The AGI searches broadly across the internet for recent cyber security events and assigns a severity rating (Critical, High, Medium, Low, or Informational) to each finding. Running per-keyword gives the AGI more focused results than a single combined query.
+2. **AGI Intelligence** -- If an Ask Sage API key is configured, a **separate AGI query runs for each keyword** immediately after that keyword's dork searches complete. Each query sends the keyword (along with any URLs discovered during its dorking) to a Gemini 2.5 Flash model with live web search enabled. The AGI searches broadly across the internet for recent cyber security events and assigns a severity rating (Critical, High, Medium, Low, or Informational) to each finding. Running per-keyword gives the AGI more focused results than a single combined query.
 
 3. **Reporting** -- All results are compiled into three output files:
    - **HTML Report** (`Look4Gold13_Report_<timestamp>.html`) -- A styled, dark-themed report organized by keyword. Each keyword section shows its AGI findings (with color-coded severity badges) followed by its dork results. This is the primary deliverable.
@@ -122,10 +122,10 @@ The goal is that each request, looked at in isolation, appears to be a completel
 
 Requests are spaced apart with a configurable delay plus random jitter:
 
-- **Base delay** (default: 60 seconds) -- The minimum gap between requests.
+- **Base delay** (default: 120 seconds) -- The minimum gap between requests.
 - **Jitter** (default: 5-15 seconds) -- A random amount added on top of the base delay.
 
-So by default, requests go out every 65-75 seconds. This mimics a human who searches, reads results, and then searches again. The randomness prevents a detectable fixed-interval pattern. You can tune these values with `-BaseDelay`, `-MinJitter`, and `-MaxJitter`.
+So by default, requests go out every 125-135 seconds. This mimics a human who searches, reads results, and then searches again. The randomness prevents a detectable fixed-interval pattern. You can tune these values with `-BaseDelay`, `-MinJitter`, and `-MaxJitter`.
 
 ### Dork Grouping (OR Queries)
 
@@ -162,7 +162,7 @@ If DDG does return a CAPTCHA despite all precautions, the script doesn't just gi
 |---|---|---|---|
 | `-KeywordFile` | string | `config/keywords.txt` | Path to a custom keywords file |
 | `-MaxDorks` | int | `0` (all) | Limit to the first N dorks. Useful for quick tests |
-| `-BaseDelay` | int | `60` | Base seconds to wait between DDG requests |
+| `-BaseDelay` | int | `120` | Base seconds to wait between DDG requests |
 | `-MinJitter` | int | `5` | Minimum random seconds added to the delay |
 | `-MaxJitter` | int | `15` | Maximum random seconds added to the delay |
 | `-VerboseOutput` | switch | off | Show extra debug info (saved HTML on empty results, etc.) |
@@ -241,7 +241,7 @@ You can edit `sources.json` directly to add or remove dorks. See `sources.exampl
 ## Example Usage
 
 ```powershell
-# Full scan with defaults (all dorks, 60s+jitter between requests)
+# Full scan with defaults (all dorks, 120s+jitter between requests)
 .\Look4Gold13.ps1
 
 # Quick test: only first 2 dorks, faster timing
