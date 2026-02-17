@@ -154,7 +154,7 @@ If DDG does return a CAPTCHA despite all precautions, the script doesn't just gi
 1. It detects the CAPTCHA (HTTP 202, "anomaly-modal", "automated requests" text, etc.)
 2. Applies exponential backoff: 60s, then 120s, then 240s, up to 480s
 3. Retries with a completely fresh identity and rebuilt URL
-4. If the retry also hits a CAPTCHA, it halts all remaining DDG queries (but still proceeds to the AGI step with whatever results it collected)
+4. If the retry also hits a CAPTCHA, it halts DDG queries for this keyword (but still runs the per-keyword AGI query with whatever results were collected, and continues to subsequent keywords)
 
 ---
 
@@ -175,14 +175,45 @@ If DDG does return a CAPTCHA despite all precautions, the script doesn't just gi
 
 ---
 
+## Time Estimates
+
+Scan duration depends on the number of keywords, the number of dork groups, and the base delay. The default `sources.json` ships with 26 dorks that get batched into **13 query groups** per keyword.
+
+**Per-keyword breakdown (defaults: 120s base + 5-15s jitter):**
+
+| Phase | Time | Notes |
+|---|---|---|
+| DDG dork searches | ~28 min | 13 query groups x ~130s average delay |
+| Ask Sage AGI query | ~30 sec | Single API call with live web search |
+| **Total per keyword** | **~28-29 min** | |
+
+**Multi-keyword examples:**
+
+| Keywords | Dorks Mode | Estimated Total |
+|---|---|---|
+| 1 keyword | Full (all dorks) | ~29 min |
+| 3 keywords | Full (all dorks) | ~87 min (~1.5 hrs) |
+| 5 keywords | Full (all dorks) | ~145 min (~2.4 hrs) |
+| 5 keywords | `-MaxDorks 4` | ~35 min |
+| Any count | `-AgiOnly` | ~30 sec per keyword |
+
+**Tips for faster scans:**
+- Use `-MaxDorks N` to limit to the first N dorks (e.g., `-MaxDorks 4` runs only 4 groups)
+- Use `-AgiOnly` to skip dork scanning entirely (just the AGI intelligence query)
+- Lower `-BaseDelay` to reduce wait time between queries (increases CAPTCHA risk)
+
+The script displays its own time estimate at the start of each run based on your actual parameters.
+
+---
+
 ## Output Files
 
 All output files are written to the script's directory with timestamps in the filename.
 
 | File | Format | Contents |
 |---|---|---|
-| `Look4Gold13_Report_<timestamp>.html` | HTML | Combined report -- AGI intelligence (with severity badges) followed by dork results. Open in any browser. |
-| `Look4Gold13_AGI_<timestamp>.json` | JSON | Structured AGI results: `{ metadata: {...}, results: [{severity, title, summary, link, ...}] }` |
+| `Look4Gold13_Report_<timestamp>.html` | HTML | Report organized by keyword -- each section shows AGI findings (with severity badges) then dork results. Open in any browser. |
+| `Look4Gold13_AGI_<timestamp>.json` | JSON | Structured AGI results tagged by keyword: `{ metadata: {...}, results: [{keyword, severity, title, summary, link, ...}] }` |
 | `Look4Gold13_Results_<timestamp>.csv` | CSV | Flat dork results: Title, Summary, URL |
 
 ---
@@ -261,8 +292,8 @@ You can edit `sources.json` directly to add or remove dorks. See `sources.exampl
 # AGI-only: just the Ask Sage intelligence query
 .\Look4Gold13.ps1 -AgiOnly
 
-# Maximum stealth: slow and steady
-.\Look4Gold13.ps1 -BaseDelay 120 -MinJitter 15 -MaxJitter 45
+# Maximum stealth: slow and steady (default is already 120s base)
+.\Look4Gold13.ps1 -BaseDelay 180 -MinJitter 15 -MaxJitter 45
 ```
 
 ---
