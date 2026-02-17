@@ -10,6 +10,7 @@
     .\Look4Gold13.ps1 -MaxDorks 4
     .\Look4Gold13.ps1 -MaxDorks 1 -BaseDelay 90
     .\Look4Gold13.ps1 -Silent
+    .\Look4Gold13.ps1 -AgiOnly
 #>
 param(
     [string]$KeywordFile,
@@ -20,7 +21,8 @@ param(
     [switch]$VerboseOutput,         # Extra debug output
     [string]$OutputFile,            # Custom path for CSV export
     [switch]$NoExport,              # Suppress file export
-    [switch]$Silent                 # Suppress all console output
+    [switch]$Silent,                # Suppress all console output
+    [switch]$AgiOnly                # Skip dork scanning, run AGI only
 )
 
 # ============================================================================
@@ -602,13 +604,42 @@ function Invoke-DdgSearch {
 # ASK SAGE AGI QUERY
 # ============================================================================
 
+function Get-AskSagePersonaId {
+    <# Looks up the "Look4Gold13" persona by name via the Ask Sage API.
+       Returns the persona ID if found, otherwise falls back to 5 (ISSO). #>
+    param(
+        [Parameter(Mandatory)][string]$ApiKey
+    )
+
+    $uri     = "https://api.genai.army.mil/server/get-personas"
+    $headers = @{
+        "Content-Type"    = "application/json"
+        "x-access-tokens" = $ApiKey
+    }
+
+    try {
+        $personas = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers
+        $match = $personas.response | Where-Object { $_.name -eq "Look4Gold13" }
+        if ($match) {
+            Write-Host "[Ask Sage] Using custom persona 'Look4Gold13' (ID: $($match.id))" -ForegroundColor Cyan
+            return [int]$match.id
+        }
+    } catch {
+        Write-Host "[Ask Sage] WARNING: Could not retrieve personas: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+
+    Write-Host "[Ask Sage] Custom persona 'Look4Gold13' not found - falling back to ISSO (ID: 5)" -ForegroundColor DarkYellow
+    return 5
+}
+
 function Invoke-AskSageQuery {
     <# Sends a single query to the Ask Sage API using keywords and scan results.
        Returns the parsed response or $null on failure. #>
     param(
         [Parameter(Mandatory)][array]$Keywords,
         [Parameter(Mandatory)][string]$ApiKey,
-        [array]$ScanResults = @()
+        [array]$ScanResults = @(),
+        [int]$PersonaId = 5
     )
 
     $uri = "https://api.genai.army.mil/server/query"
@@ -632,18 +663,22 @@ function Invoke-AskSageQuery {
 
     $body = @{
         message     = @"
-Please search for any recent cyber security news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Search broadly across the internet — do not limit yourself to specific sites. Provide a link to every article or site referenced. For each entry, assess the severity as Critical, High, Medium, Low, or Informational based on the potential impact. Format response as JSON array. Use the following format for each entry:
-{
-  "date_published":
-  "source_site":
-  "category":
-  "severity":
-  "title":
-  "summary":
-  "link":
-}$scanContext
+Search for any recent cyber security news, breaches, leaks, vulnerabilities, ransomware, or other notable events related to $searchText in the last $days days. Search broadly across the internet. Provide a link to every article or site referenced. For each entry, assess the severity as Critical, High, Medium, Low, or Informational based on the potential impact.
+
+Respond with ONLY a JSON array, no other text before or after it. Use this exact format for each entry:
+[
+  {
+    "date_published": "YYYY-MM-DD",
+    "source_site": "example.com",
+    "category": "Vulnerability|Breach|Ransomware|Leak|Informational",
+    "severity": "Critical|High|Medium|Low|Informational",
+    "title": "Short descriptive title",
+    "summary": "Brief summary of the event",
+    "link": "https://full-url-to-source"
+  }
+]$scanContext
 "@
-        persona     = 5
+        persona     = $PersonaId
         model       = "google-gemini-2.5-pro"
         temperature = 0.7
         live        = 2
@@ -678,6 +713,15 @@ Write-Host ""
 # Load config
 Write-Host "[Loading configuration]" -ForegroundColor White
 $keywords = Import-Keywords -Path $KeywordFile
+$allResults = @()
+$queryNum = 0
+$totalQueries = 0
+$captchaState = @{ HitCount = 0; ConsecutiveHits = 0; Blocked = $false; LastHitTime = $null }
+$scanStart = Get-Date
+$elapsed = New-TimeSpan
+
+if (-not $AgiOnly) {
+
 $dorks = Import-Sources -MaxDorks $MaxDorks
 
 # Group dorks by type (site:, text) to reduce query count
@@ -906,6 +950,8 @@ if ($allResults.Count -gt 0 -and -not $NoExport) {
     Write-Host ""
 }
 
+} # end if (-not $AgiOnly)
+
 # Ask Sage AGI query (runs once, only if API key env var is set)
 $sageItems = @()
 $sageApiKey = $env:ASK_SAGE_API_KEY
@@ -915,7 +961,8 @@ if ($sageApiKey) {
     Write-Host "========================================" -ForegroundColor White
     Write-Host ""
 
-    $sageResponse = Invoke-AskSageQuery -Keywords $keywords -ApiKey $sageApiKey -ScanResults $allResults
+    $personaId = Get-AskSagePersonaId -ApiKey $sageApiKey
+    $sageResponse = Invoke-AskSageQuery -Keywords $keywords -ApiKey $sageApiKey -ScanResults $allResults -PersonaId $personaId
 
     if ($sageResponse) {
         # Extract the AGI message and attempt to parse the JSON array from it

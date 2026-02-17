@@ -1,18 +1,14 @@
 {
     "genai": {
         "endpoint": "https://api.genai.army.mil/server/query",
-        "tokenEnvVar": "GENAI_API_TOKEN",
+        "tokenEnvVar": "ASK_SAGE_API_KEY",
         "model": "google-gemini-2.5-pro",
         "persona": 5,
         "temperature": 0.7,
-        "limit_references": 5,
-        "web_search": "live+",
-	"dataset": "all"
+        "live": 2
     },
     "search": {
         "daysBack": 30,
-        "delaySeconds": 4,
-        "sources": ["DuckDuckGo", "Paste", "Breach"],
-        "webProxyBase": "https://safe.menlosecurity.com"
+        "delaySeconds": 60
     }
 }
