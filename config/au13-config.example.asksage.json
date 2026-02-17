@@ -3,7 +3,7 @@
         "endpoint": "https://api.genai.army.mil/server/query",
         "tokenEnvVar": "ASK_SAGE_API_KEY",
         "model": "google-gemini-2.5-pro",
-        "persona": 0,
+        "persona": 5,
         "temperature": 0.7,
         "live": 2
     },
