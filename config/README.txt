@@ -23,8 +23,8 @@ controlled information. See keywords.example.txt for format examples.
 
 ASK SAGE API KEY
 ------------------------------------
-The AGI query is optional. If the ASK_SAGE_API_KEY environment variable
-is set, the script sends a separate AGI query for each keyword (with
+The GenAI query is optional. If the ASK_SAGE_API_KEY environment variable
+is set, the script sends a separate GenAI query for each keyword (with
 that keyword's dork-discovered URLs as context) to Ask Sage for
 AI-powered analysis with severity ratings. Without it, you still get
 all the dork results.
@@ -45,7 +45,7 @@ CUSTOM PERSONA (recommended)
 ------------------------------------
 For best results, create a custom persona in Ask Sage named exactly
 "Look4Gold13". The script automatically looks up this persona by name
-via the get-personas API and uses it for AGI queries. If not found, it
+via the get-personas API and uses it for GenAI queries. If not found, it
 falls back to the built-in ISSO (Cyber) persona (ID 5).
 
 To create your custom persona:
@@ -140,13 +140,13 @@ SCRIPT PARAMETERS
 -OutputFile      Custom path for CSV export
 -NoExport        Suppress all file output (CSV, JSON, HTML)
 -Silent          Suppress all console output (files still written)
--AgiOnly         Skip dork scanning, run only the Ask Sage AGI query
+-AgiOnly         Skip dork scanning, run only the Ask Sage GenAI query
 
 
 OUTPUT FILES
 ------------------------------------
-Look4Gold13_Report_<timestamp>.html   HTML report grouped by keyword (AGI + dork results per keyword)
-Look4Gold13_AGI_<timestamp>.json      Structured AGI results tagged by keyword, with severity
+Look4Gold13_Report_<timestamp>.html   HTML report grouped by keyword (GenAI + dork results per keyword)
+Look4Gold13_AGI_<timestamp>.json      Structured GenAI results tagged by keyword, with severity
 Look4Gold13_Results_<timestamp>.csv   Flat dork results (Title, Summary, URL)
 
 
@@ -160,7 +160,7 @@ These settings are hardcoded in the script but documented here for reference:
   Temperature:  0.7
   Live search:  2 (live web search enabled)
 
-The AGI prompt requests a JSON array with severity ratings
+The GenAI prompt requests a JSON array with severity ratings
 (Critical, High, Medium, Low, Informational) and AU-13 disclosure
 categories for each finding. A separate query runs per keyword.
 
