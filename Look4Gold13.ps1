@@ -719,6 +719,7 @@ $totalQueries = 0
 $captchaState = @{ HitCount = 0; ConsecutiveHits = 0; Blocked = $false; LastHitTime = $null }
 $scanStart = Get-Date
 $elapsed = New-TimeSpan
+$allSageResults = [ordered]@{}
 
 if (-not $AgiOnly) {
 
@@ -815,6 +816,23 @@ public class Win32 {
     Write-Host "[Browser] Could not open DuckDuckGo: $($_.Exception.Message)" -ForegroundColor DarkYellow
 }
 
+} # end if (-not $AgiOnly) setup
+
+# Resolve persona once if API key is set
+$sageApiKey = $env:ASK_SAGE_API_KEY
+$personaId = 5
+if ($sageApiKey) {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor White
+    Write-Host " ASK SAGE AGI ANALYSIS (per-keyword)" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor White
+    Write-Host ""
+    $personaId = Get-AskSagePersonaId -ApiKey $sageApiKey
+} else {
+    Write-Host "[Ask Sage] Skipped - ASK_SAGE_API_KEY environment variable not set" -ForegroundColor DarkGray
+    Write-Host ""
+}
+
 $queryNum = 0
 $scanStart = Get-Date
 
@@ -824,11 +842,8 @@ Write-Host ""
 foreach ($keyword in $keywords) {
     Write-Host "[Keyword] '$keyword'" -ForegroundColor White
 
-    if ($captchaState.Blocked) {
-        Write-Host "  [BLOCKED] CAPTCHA block active - skipping remaining keywords" -ForegroundColor Red
-        break
-    }
-
+    # --- Dork searches for this keyword ---
+    if (-not $AgiOnly -and -not $captchaState.Blocked) {
     foreach ($group in $dorkGroups) {
         $queryNum++
 
@@ -879,6 +894,35 @@ foreach ($keyword in $keywords) {
             Start-Sleep -Seconds $delay
         }
     }
+    } elseif (-not $AgiOnly) {
+        Write-Host "  [BLOCKED] CAPTCHA block active - skipping dork searches" -ForegroundColor Red
+    }
+
+    # --- AGI query for this keyword ---
+    if ($sageApiKey) {
+        $kwDorkResults = @($allResults | Where-Object { $_.Keyword -eq $keyword })
+        $sageResponse = Invoke-AskSageQuery -Keywords @($keyword) -ApiKey $sageApiKey -ScanResults $kwDorkResults -PersonaId $personaId
+
+        if ($sageResponse) {
+            $sageRaw = if ($sageResponse.message) { $sageResponse.message } else { $sageResponse | ConvertTo-Json -Depth 5 }
+            $jsonText = $sageRaw
+            if ($jsonText -match '(?s)```(?:json)?\s*(\[[\s\S]*\])\s*```') {
+                $jsonText = $Matches[1]
+            } elseif ($jsonText -match '(?s)(\[\s*\{[\s\S]*\}\s*\])') {
+                $jsonText = $Matches[1]
+            }
+            try {
+                $parsed = $jsonText | ConvertFrom-Json
+                $allSageResults[$keyword] = @($parsed)
+                Write-Host "  [Ask Sage] $(@($parsed).Count) finding(s) for '$keyword'" -ForegroundColor Green
+            } catch {
+                Write-Host "  [Ask Sage] Could not parse JSON for '$keyword'" -ForegroundColor DarkYellow
+                $allSageResults[$keyword] = @()
+            }
+        } else {
+            $allSageResults[$keyword] = @()
+        }
+    }
 
     Write-Host ""
 }
@@ -889,6 +933,7 @@ foreach ($keyword in $keywords) {
 $scanEnd = Get-Date
 $elapsed = $scanEnd - $scanStart
 
+if (-not $AgiOnly) {
 Write-Host "========================================" -ForegroundColor White
 Write-Host " SCAN COMPLETE" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor White
@@ -949,44 +994,19 @@ if ($allResults.Count -gt 0 -and -not $NoExport) {
     }
     Write-Host ""
 }
+} # end if (-not $AgiOnly) summary
 
-} # end if (-not $AgiOnly)
-
-# Ask Sage AGI query (runs once, only if API key env var is set)
+# Flatten per-keyword AGI results and export JSON
 $sageItems = @()
-$sageApiKey = $env:ASK_SAGE_API_KEY
-if ($sageApiKey) {
-    Write-Host "========================================" -ForegroundColor White
-    Write-Host " ASK SAGE AGI ANALYSIS" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor White
-    Write-Host ""
-
-    $personaId = Get-AskSagePersonaId -ApiKey $sageApiKey
-    $sageResponse = Invoke-AskSageQuery -Keywords $keywords -ApiKey $sageApiKey -ScanResults $allResults -PersonaId $personaId
-
-    if ($sageResponse) {
-        # Extract the AGI message and attempt to parse the JSON array from it
-        $sageRaw = if ($sageResponse.message) { $sageResponse.message } else { $sageResponse | ConvertTo-Json -Depth 5 }
-        Write-Host "[Ask Sage] Response received." -ForegroundColor Cyan
-
-        # Try to extract JSON array from the response (may be wrapped in markdown code fences)
-        $sageItems = @()
-        $jsonText = $sageRaw
-        # Strip markdown code fences if present
-        if ($jsonText -match '(?s)```(?:json)?\s*(\[[\s\S]*\])\s*```') {
-            $jsonText = $Matches[1]
-        } elseif ($jsonText -match '(?s)(\[\s*\{[\s\S]*\}\s*\])') {
-            $jsonText = $Matches[1]
+if ($allSageResults.Count -gt 0) {
+    foreach ($kw in $allSageResults.Keys) {
+        foreach ($item in $allSageResults[$kw]) {
+            $item | Add-Member -NotePropertyName 'keyword' -NotePropertyValue $kw -Force
+            $sageItems += $item
         }
-        try {
-            $parsed = $jsonText | ConvertFrom-Json
-            # Ensure we always have an array (ConvertFrom-Json unwraps single-item arrays)
-            $sageItems = @($parsed)
-        } catch {
-            Write-Host "[Ask Sage] Could not parse JSON from response, saving raw" -ForegroundColor DarkYellow
-        }
+    }
 
-        # Build proper JSON output
+    if ($sageItems.Count -gt 0 -and -not $NoExport) {
         $sageTimestamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
         $sagePath = Join-Path $PSScriptRoot "Look4Gold13_AGI_$sageTimestamp.json"
 
@@ -1001,19 +1021,16 @@ if ($sageApiKey) {
         }
 
         $sageJsonObj | ConvertTo-Json -Depth 10 | Out-File -FilePath $sagePath -Encoding UTF8
-        Write-Host "[Ask Sage] $($sageItems.Count) result(s) saved to:" -ForegroundColor Cyan
+        Write-Host "[Ask Sage] $($sageItems.Count) total finding(s) saved to:" -ForegroundColor Cyan
         Write-Host "  $sagePath" -ForegroundColor White
+        Write-Host ""
     }
-    Write-Host ""
-} else {
-    Write-Host "[Ask Sage] Skipped - ASK_SAGE_API_KEY environment variable not set" -ForegroundColor DarkGray
-    Write-Host ""
 }
 
 # ============================================================================
 # HTML REPORT
 # ============================================================================
-if (($allResults.Count -gt 0 -or ($sageItems -and $sageItems.Count -gt 0)) -and -not $NoExport) {
+if (($allResults.Count -gt 0 -or $sageItems.Count -gt 0) -and -not $NoExport) {
     $reportTimestamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
     $reportPath = Join-Path $PSScriptRoot "Look4Gold13_Report_$reportTimestamp.html"
 
@@ -1038,6 +1055,7 @@ if (($allResults.Count -gt 0 -or ($sageItems -and $sageItems.Count -gt 0)) -and 
   h1 { color: #e94560; margin-bottom: 0.5rem; }
   .subtitle { color: #888; margin-bottom: 2rem; }
   h2 { color: #0f3460; background: #e94560; display: inline-block; padding: 0.4rem 1rem; border-radius: 4px; margin: 2rem 0 1rem; }
+  h3 { color: #53a8e2; margin: 1.2rem 0 0.6rem; border-bottom: 1px solid #2a2a4a; padding-bottom: 0.3rem; }
   table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; }
   th { background: #16213e; color: #e94560; text-align: left; padding: 0.6rem 0.8rem; border-bottom: 2px solid #0f3460; }
   td { padding: 0.6rem 0.8rem; border-bottom: 1px solid #2a2a4a; vertical-align: top; }
@@ -1048,6 +1066,7 @@ if (($allResults.Count -gt 0 -or ($sageItems -and $sageItems.Count -gt 0)) -and 
   .summary { color: #aaa; font-size: 0.9rem; }
   .stats { color: #888; margin-bottom: 1rem; }
   .section-empty { color: #666; font-style: italic; margin-bottom: 2rem; }
+  .keyword-section { margin-bottom: 2.5rem; padding: 1rem; border: 1px solid #2a2a4a; border-radius: 6px; background: #16213e22; }
 </style>
 </head>
 <body>
@@ -1056,62 +1075,71 @@ if (($allResults.Count -gt 0 -or ($sageItems -and $sageItems.Count -gt 0)) -and 
 <p class="stats">Scan duration: $($elapsed.ToString('hh\:mm\:ss')) | Queries: $queryNum / $totalQueries | CAPTCHA hits: $($captchaState.HitCount)</p>
 "@
 
-    # --- AGI Results Section ---
-    $html += "`n<h2>AGI Intelligence (Ask Sage)</h2>`n"
-    if ($sageItems -and @($sageItems).Count -gt 0) {
-        $html += "<table>`n<tr><th>Severity</th><th>Title</th><th>Category</th><th>Source</th><th>Summary</th></tr>`n"
-        foreach ($item in @($sageItems)) {
-            # Safely read each property, defaulting to empty string
-            $sev        = if ($item.severity)    { "$($item.severity)" }    else { 'Informational' }
-            $itemTitle  = if ($item.title)        { "$($item.title)" }      else { '' }
-            $itemCat    = if ($item.category)     { "$($item.category)" }   else { '' }
-            $itemSite   = if ($item.source_site)  { "$($item.source_site)" } else { '' }
-            $itemLink   = if ($item.link)         { "$($item.link)" }       else { '' }
-            $itemSum    = if ($item.summary)       { "$($item.summary)" }   else { '' }
+    # --- Per-keyword sections ---
+    foreach ($keyword in $keywords) {
+        $kwSage  = if ($allSageResults.Contains($keyword)) { @($allSageResults[$keyword]) } else { @() }
+        $kwDorks = @($allResults | Where-Object { $_.Keyword -eq $keyword })
+        $kwHasContent = ($kwSage.Count -gt 0 -or $kwDorks.Count -gt 0)
 
-            $sevColor = if ($severityColors.ContainsKey($sev)) { $severityColors[$sev] } else { '#6c757d' }
+        $html += "`n<div class=`"keyword-section`">"
+        $html += "`n<h2>$([System.Web.HttpUtility]::HtmlEncode($keyword))</h2>`n"
 
-            # Build source cell: linked if we have a URL, plain text otherwise
-            $sourceCell = ''
-            if ($itemLink) {
-                $encodedHref = [System.Web.HttpUtility]::HtmlAttributeEncode($itemLink)
-                $sourceCell = "<a href=`"$encodedHref`" target=`"_blank`">$([System.Web.HttpUtility]::HtmlEncode($itemSite))</a>"
-            } else {
-                $sourceCell = [System.Web.HttpUtility]::HtmlEncode($itemSite)
+        # AGI findings for this keyword
+        $html += "<h3>AGI Intelligence (Ask Sage)</h3>`n"
+        if ($kwSage.Count -gt 0) {
+            $html += "<table>`n<tr><th>Severity</th><th>Title</th><th>Category</th><th>Source</th><th>Summary</th></tr>`n"
+            foreach ($item in $kwSage) {
+                $sev        = if ($item.severity)    { "$($item.severity)" }    else { 'Informational' }
+                $itemTitle  = if ($item.title)        { "$($item.title)" }      else { '' }
+                $itemCat    = if ($item.category)     { "$($item.category)" }   else { '' }
+                $itemSite   = if ($item.source_site)  { "$($item.source_site)" } else { '' }
+                $itemLink   = if ($item.link)         { "$($item.link)" }       else { '' }
+                $itemSum    = if ($item.summary)       { "$($item.summary)" }   else { '' }
+
+                $sevColor = if ($severityColors.ContainsKey($sev)) { $severityColors[$sev] } else { '#6c757d' }
+
+                $sourceCell = ''
+                if ($itemLink) {
+                    $encodedHref = [System.Web.HttpUtility]::HtmlAttributeEncode($itemLink)
+                    $sourceCell = "<a href=`"$encodedHref`" target=`"_blank`">$([System.Web.HttpUtility]::HtmlEncode($itemSite))</a>"
+                } else {
+                    $sourceCell = [System.Web.HttpUtility]::HtmlEncode($itemSite)
+                }
+
+                $html += "<tr>"
+                $html += "<td><span class=`"severity`" style=`"background:$sevColor`">$([System.Web.HttpUtility]::HtmlEncode($sev))</span></td>"
+                $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($itemTitle))</td>"
+                $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($itemCat))</td>"
+                $html += "<td>$sourceCell</td>"
+                $html += "<td class=`"summary`">$([System.Web.HttpUtility]::HtmlEncode($itemSum))</td>"
+                $html += "</tr>`n"
             }
-
-            $html += "<tr>"
-            $html += "<td><span class=`"severity`" style=`"background:$sevColor`">$([System.Web.HttpUtility]::HtmlEncode($sev))</span></td>"
-            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($itemTitle))</td>"
-            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($itemCat))</td>"
-            $html += "<td>$sourceCell</td>"
-            $html += "<td class=`"summary`">$([System.Web.HttpUtility]::HtmlEncode($itemSum))</td>"
-            $html += "</tr>`n"
+            $html += "</table>`n"
+        } else {
+            $html += "<p class=`"section-empty`">No AGI results for this keyword.</p>`n"
         }
-        $html += "</table>`n"
-    } else {
-        $html += "<p class=`"section-empty`">No AGI results available (API key not set or query returned no data).</p>`n"
-    }
 
-    # --- Dork Results Section ---
-    $html += "<h2>Search Dork Results</h2>`n"
-    if ($allResults.Count -gt 0) {
-        $html += "<table><tr><th>Keyword</th><th>Dork</th><th>Title</th><th>URL</th><th>Summary</th></tr>`n"
-        foreach ($r in $allResults) {
-            $html += "<tr>"
-            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Keyword))</td>"
-            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Dork))</td>"
-            $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Title))</td>"
-            $encodedUrl = [System.Web.HttpUtility]::HtmlAttributeEncode($r.Url)
-            $html += "<td><a href=`"$encodedUrl`" target=`"_blank`">$([System.Web.HttpUtility]::HtmlEncode($r.Url))</a></td>"
-            $rawSummary = if ($r.Summary) { "$($r.Summary)" } else { '' }
-            $summaryText = if ($rawSummary.Length -gt 200) { $rawSummary.Substring(0, 200) + '...' } else { $rawSummary }
-            $html += "<td class=`"summary`">$([System.Web.HttpUtility]::HtmlEncode($summaryText))</td>"
-            $html += "</tr>`n"
+        # Dork results for this keyword
+        $html += "<h3>Search Dork Results</h3>`n"
+        if ($kwDorks.Count -gt 0) {
+            $html += "<table><tr><th>Dork</th><th>Title</th><th>URL</th><th>Summary</th></tr>`n"
+            foreach ($r in $kwDorks) {
+                $html += "<tr>"
+                $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Dork))</td>"
+                $html += "<td>$([System.Web.HttpUtility]::HtmlEncode($r.Title))</td>"
+                $encodedUrl = [System.Web.HttpUtility]::HtmlAttributeEncode($r.Url)
+                $html += "<td><a href=`"$encodedUrl`" target=`"_blank`">$([System.Web.HttpUtility]::HtmlEncode($r.Url))</a></td>"
+                $rawSummary = if ($r.Summary) { "$($r.Summary)" } else { '' }
+                $summaryText = if ($rawSummary.Length -gt 200) { $rawSummary.Substring(0, 200) + '...' } else { $rawSummary }
+                $html += "<td class=`"summary`">$([System.Web.HttpUtility]::HtmlEncode($summaryText))</td>"
+                $html += "</tr>`n"
+            }
+            $html += "</table>`n"
+        } else {
+            $html += "<p class=`"section-empty`">No dork results for this keyword.</p>`n"
         }
-        $html += "</table>`n"
-    } else {
-        $html += "<p class=`"section-empty`">No dork results found.</p>`n"
+
+        $html += "</div>`n"
     }
 
     $html += "</body></html>"
