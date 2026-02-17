@@ -139,7 +139,7 @@ SCRIPT PARAMETERS
 ------------------------------------
 -KeywordFile     Path to keywords file (default: config/keywords.txt)
 -MaxDorks        Limit to first N dorks; 0 = all (default: 0)
--BaseDelay       Base seconds between DDG requests (default: 60)
+-BaseDelay       Base seconds between DDG requests (default: 120)
 -MinJitter       Min random seconds added to delay (default: 5)
 -MaxJitter       Max random seconds added to delay (default: 15)
 -VerboseOutput   Show extra debug info
@@ -161,7 +161,7 @@ ASK SAGE SETTINGS (for advanced users)
 These settings are hardcoded in the script but documented here for reference:
 
   Endpoint:     https://api.genai.army.mil/server/query
-  Model:        google-gemini-2.5-pro
+  Model:        google-gemini-2.5-flash
   Persona:      Dynamic - looks up "Look4Gold13" by name, falls back to 5 (ISSO)
   Temperature:  0.7
   Live search:  2 (live web search enabled)

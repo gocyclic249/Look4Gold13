@@ -10,10 +10,10 @@ Look4Gold13 automates the process of searching for your organization's publicly 
 
 1. **Search Dorking** -- Takes your keywords (company names, domains, project names, etc.) and combines them with a library of search dorks targeting paste sites, code repos, breach databases, and security news sources. Each keyword is searched against every dork via DuckDuckGo.
 
-2. **AGI Intelligence** -- If an Ask Sage API key is configured, the tool sends your keywords (along with any URLs discovered during dorking) to a Gemini 2.5 Pro model with live web search enabled. The AGI searches broadly across the internet for recent cyber security events related to your keywords and assigns a severity rating (Critical, High, Medium, Low, or Informational) to each finding.
+2. **AGI Intelligence** -- If an Ask Sage API key is configured, a **separate AGI query runs for each keyword** immediately after that keyword's dork searches complete. Each query sends the keyword (along with any URLs discovered during its dorking) to a Gemini 2.5 Flash model with live web search enabled. The AGI searches broadly across the internet for recent cyber security events and assigns a severity rating (Critical, High, Medium, Low, or Informational) to each finding. Running per-keyword gives the AGI more focused results than a single combined query.
 
 3. **Reporting** -- All results are compiled into three output files:
-   - **HTML Report** (`Look4Gold13_Report_<timestamp>.html`) -- A styled, dark-themed report with AGI findings listed first (with color-coded severity badges), followed by search dork results. This is the primary deliverable.
+   - **HTML Report** (`Look4Gold13_Report_<timestamp>.html`) -- A styled, dark-themed report organized by keyword. Each keyword section shows its AGI findings (with color-coded severity badges) followed by its dork results. This is the primary deliverable.
    - **JSON** (`Look4Gold13_AGI_<timestamp>.json`) -- Structured AGI results with metadata, suitable for ingestion into other tools or SIEMs.
    - **CSV** (`Look4Gold13_Results_<timestamp>.csv`) -- Flat export of all dork results (Title, Summary, URL).
 
@@ -122,10 +122,10 @@ The goal is that each request, looked at in isolation, appears to be a completel
 
 Requests are spaced apart with a configurable delay plus random jitter:
 
-- **Base delay** (default: 60 seconds) -- The minimum gap between requests.
+- **Base delay** (default: 120 seconds) -- The minimum gap between requests.
 - **Jitter** (default: 5-15 seconds) -- A random amount added on top of the base delay.
 
-So by default, requests go out every 65-75 seconds. This mimics a human who searches, reads results, and then searches again. The randomness prevents a detectable fixed-interval pattern. You can tune these values with `-BaseDelay`, `-MinJitter`, and `-MaxJitter`.
+So by default, requests go out every 125-135 seconds. This mimics a human who searches, reads results, and then searches again. The randomness prevents a detectable fixed-interval pattern. You can tune these values with `-BaseDelay`, `-MinJitter`, and `-MaxJitter`.
 
 ### Dork Grouping (OR Queries)
 
@@ -162,7 +162,7 @@ If DDG does return a CAPTCHA despite all precautions, the script doesn't just gi
 |---|---|---|---|
 | `-KeywordFile` | string | `config/keywords.txt` | Path to a custom keywords file |
 | `-MaxDorks` | int | `0` (all) | Limit to the first N dorks. Useful for quick tests |
-| `-BaseDelay` | int | `60` | Base seconds to wait between DDG requests |
+| `-BaseDelay` | int | `120` | Base seconds to wait between DDG requests |
 | `-MinJitter` | int | `5` | Minimum random seconds added to the delay |
 | `-MaxJitter` | int | `15` | Maximum random seconds added to the delay |
 | `-VerboseOutput` | switch | off | Show extra debug info (saved HTML on empty results, etc.) |
@@ -226,12 +226,14 @@ You can edit `sources.json` directly to add or remove dorks. See `sources.exampl
 1. **Load configuration** -- Keywords from `keywords.txt`, dorks from `sources.json`.
 2. **Group dorks** -- All `site:` dorks are combined into OR queries to minimize request count.
 3. **Open DDG browser session** -- A minimized browser window opens `html.duckduckgo.com` to prime the session.
-4. **Execute searches** -- For each keyword, for each dork group: build a randomized DDG query, send it with a fresh browser identity, parse results, wait a randomized delay.
-5. **Collect and deduplicate** -- Results are deduplicated by keyword+URL.
-6. **Export CSV** -- Dork results are saved to a CSV file.
-7. **AGI query** -- If `ASK_SAGE_API_KEY` is set, keywords and discovered URLs are sent to Ask Sage for AI-powered analysis with severity ratings.
-8. **Export JSON** -- AGI results are saved as structured JSON.
-9. **Generate HTML report** -- AGI findings (with severity) and dork results are combined into a styled HTML report.
+4. **Resolve persona** -- If `ASK_SAGE_API_KEY` is set, look up the "Look4Gold13" custom persona once.
+5. **Per-keyword loop** -- For each keyword:
+   - **Dork searches** -- Execute each dork group query with fresh browser identity, parse results, wait a randomized delay.
+   - **AGI query** -- Send the keyword and its discovered URLs to Ask Sage for AI-powered analysis with severity ratings.
+6. **Collect and deduplicate** -- Results are deduplicated by keyword+URL.
+7. **Export CSV** -- Dork results are saved to a CSV file.
+8. **Export JSON** -- AGI results (tagged by keyword) are saved as structured JSON.
+9. **Generate HTML report** -- Results are organized by keyword, each section showing AGI findings then dork results.
 10. **Cleanup** -- The DDG browser window is closed.
 
 ---
@@ -239,7 +241,7 @@ You can edit `sources.json` directly to add or remove dorks. See `sources.exampl
 ## Example Usage
 
 ```powershell
-# Full scan with defaults (all dorks, 60s+jitter between requests)
+# Full scan with defaults (all dorks, 120s+jitter between requests)
 .\Look4Gold13.ps1
 
 # Quick test: only first 2 dorks, faster timing
