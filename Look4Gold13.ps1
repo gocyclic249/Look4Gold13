@@ -70,7 +70,7 @@ if ($Silent) {
 #
 # Event Types:
 #   AUDIT_LOG_INIT, SCAN_START, SCAN_COMPLETE, CONFIG_LOAD, CONFIG_ERROR,
-#   KEYWORD_START, KEYWORD_COMPLETE, DORK_QUERY, CAPTCHA_DETECTED,
+#   KEYWORD_START, KEYWORD_COMPLETE, DORK_QUERY, DORK_RESULTS, CAPTCHA_DETECTED,
 #   CAPTCHA_BLOCKED, CVE_QUERY_START, CVE_QUERY_COMPLETE, CVE_QUERY_ERROR,
 #   GENAI_QUERY, GENAI_RESPONSE, GENAI_ERROR, PERSONA_LOOKUP,
 #   DATA_EXPORT, EXPORT_ERROR, NETWORK_ERROR, BROWSER_OPEN, BROWSER_CLOSE
@@ -1262,6 +1262,16 @@ foreach ($keyword in $keywords) {
             Start-Sleep -Seconds $delay
         }
     }
+    # Log dork results for this keyword
+    $kwDorkForLog = @($allResults | Where-Object { $_.Keyword -eq $keyword })
+    if ($kwDorkForLog.Count -gt 0) {
+        $dorkResultDetails = @($kwDorkForLog | ForEach-Object {
+            @{ dork = $_.Dork; title = $_.Title; url = $_.Url; summary = $_.Summary }
+        })
+        Write-AuditLog -EventType 'DORK_RESULTS' -Source 'Invoke-DdgSearch' -Outcome 'Success' `
+            -Subject $keyword -Message "$($kwDorkForLog.Count) dork result(s) collected for keyword" `
+            -Details @{ result_count = $kwDorkForLog.Count; results = $dorkResultDetails }
+    }
     } elseif (-not $AgiOnly -and -not $CveOnly) {
         Write-Host "  [BLOCKED] CAPTCHA block active - skipping dork searches" -ForegroundColor Red
         Write-AuditLog -EventType 'CAPTCHA_BLOCKED' -Source 'Main' -Outcome 'Warning' `
@@ -1282,9 +1292,13 @@ foreach ($keyword in $keywords) {
         $cveColor = if ($cveResults.Count -gt 0) { 'Green' } else { 'DarkGray' }
         Write-Host "  [NVD] $($cveResults.Count) CVE(s) found for '$keyword'" -ForegroundColor $cveColor
 
+        # Build result summaries for the audit log
+        $cveResultDetails = @($cveResults | ForEach-Object {
+            @{ cve_id = $_.CveId; severity = $_.Severity; cvss_score = $_.CvssScore; published = $_.Published; description = $_.Description; nvd_link = $_.NvdLink }
+        })
         Write-AuditLog -EventType 'CVE_QUERY_COMPLETE' -Source 'Invoke-NvdCveSearch' -Outcome 'Success' `
             -Subject $keyword -Message "NVD search complete: $($cveResults.Count) CVE(s) found" `
-            -Details @{ cve_count = $cveResults.Count }
+            -Details @{ cve_count = $cveResults.Count; results = $cveResultDetails }
     }
 
     # --- AGI query for this keyword ---
@@ -1306,8 +1320,21 @@ foreach ($keyword in $keywords) {
                 $parsed = $jsonText | ConvertFrom-Json
                 $allSageResults[$keyword] = @($parsed)
                 Write-Host "  [Ask Sage] $(@($parsed).Count) finding(s) for '$keyword'" -ForegroundColor Green
+                # Include actual GenAI findings in the audit log
+                $sageFindingDetails = @(@($parsed) | ForEach-Object {
+                    $item = @{}
+                    if ($_.title)          { $item.title = $_.title }
+                    if ($_.severity)       { $item.severity = $_.severity }
+                    if ($_.category)       { $item.category = $_.category }
+                    if ($_.summary)        { $item.summary = $_.summary }
+                    if ($_.source_site)    { $item.source_site = $_.source_site }
+                    if ($_.date_published) { $item.date_published = $_.date_published }
+                    if ($_.link)           { $item.link = $_.link }
+                    $item
+                })
                 Write-AuditLog -EventType 'GENAI_RESPONSE' -Source 'Main' -Outcome 'Success' `
-                    -Subject $keyword -Message "Parsed $(@($parsed).Count) GenAI finding(s)"
+                    -Subject $keyword -Message "Parsed $(@($parsed).Count) GenAI finding(s)" `
+                    -Details @{ finding_count = @($parsed).Count; findings = $sageFindingDetails }
             } catch {
                 Write-Host "  [Ask Sage] Could not parse JSON for '$keyword'" -ForegroundColor DarkYellow
                 $allSageResults[$keyword] = @()
@@ -1319,8 +1346,13 @@ foreach ($keyword in $keywords) {
         }
     }
 
+    # Summarize per-keyword results for audit trail
+    $kwDorkCount = @($allResults | Where-Object { $_.Keyword -eq $keyword }).Count
+    $kwCveCount = if ($allCveResults.Contains($keyword)) { $allCveResults[$keyword].Count } else { 0 }
+    $kwSageCount = if ($allSageResults.Contains($keyword)) { $allSageResults[$keyword].Count } else { 0 }
     Write-AuditLog -EventType 'KEYWORD_COMPLETE' -Source 'Main' -Outcome 'Success' `
-        -Subject $keyword -Message "Keyword processing complete"
+        -Subject $keyword -Message "Keyword processing complete: $kwDorkCount dork(s), $kwCveCount CVE(s), $kwSageCount GenAI finding(s)" `
+        -Details @{ dork_results = $kwDorkCount; cve_results = $kwCveCount; genai_findings = $kwSageCount }
 
     Write-Host ""
 }
@@ -1418,13 +1450,31 @@ if ($allCveResults.Count -gt 0) {
 # ============================================================================
 # NIST AUDIT LOG EXPORT (JSON + CSV)
 # ============================================================================
+# Build per-keyword result breakdown for audit summary
+$kwResultBreakdown = @{}
+foreach ($kw in $keywords) {
+    $kwDorks = @($allResults | Where-Object { $_.Keyword -eq $kw }).Count
+    $kwCves  = if ($allCveResults.Contains($kw)) { $allCveResults[$kw].Count } else { 0 }
+    $kwSage  = if ($allSageResults.Contains($kw)) { $allSageResults[$kw].Count } else { 0 }
+    $kwResultBreakdown[$kw] = @{ dork_results = $kwDorks; cve_results = $kwCves; genai_findings = $kwSage }
+}
+
+# Collect severity distribution across all CVEs
+$severityCounts = @{}
+foreach ($cve in $cveFlatResults) {
+    $sev = if ($cve.Severity) { $cve.Severity } else { 'Informational' }
+    if ($severityCounts.ContainsKey($sev)) { $severityCounts[$sev]++ } else { $severityCounts[$sev] = 1 }
+}
+
 Write-AuditLog -EventType 'SCAN_COMPLETE' -Source 'Main' -Outcome 'Success' `
-    -Message "Scan complete" `
+    -Message "Scan complete: $($allResults.Count) dork(s), $totalCves CVE(s), $($sageItems.Count) GenAI finding(s)" `
     -Details @{
-        duration_seconds = [math]::Round($elapsed.TotalSeconds, 1)
-        dork_results     = $allResults.Count
-        cve_results      = $totalCves
-        sage_findings    = $sageItems.Count
+        duration_seconds     = [math]::Round($elapsed.TotalSeconds, 1)
+        dork_results         = $allResults.Count
+        cve_results          = $totalCves
+        sage_findings        = $sageItems.Count
+        cve_severity_summary = $severityCounts
+        per_keyword_summary  = $kwResultBreakdown
     }
 
 if ($Script:AuditLogEntries.Count -gt 0 -and -not $NoExport) {
@@ -1433,6 +1483,26 @@ if ($Script:AuditLogEntries.Count -gt 0 -and -not $NoExport) {
     # NIST Audit Log - JSON format
     $auditJsonPath = Join-Path $Script:ScanOutputDir "Look4Gold13_Audit_$auditTimestamp.json"
     try {
+        # Build scan_results section with all actual findings
+        $dorkResultsForExport = @($allResults | ForEach-Object {
+            @{ keyword = $_.Keyword; dork = $_.Dork; title = $_.Title; url = $_.Url; summary = $_.Summary }
+        })
+        $cveResultsForExport = @($cveFlatResults | ForEach-Object {
+            @{ keyword = $_.Keyword; cve_id = $_.CveId; severity = $_.Severity; cvss_score = $_.CvssScore; published = $_.Published; description = $_.Description; nvd_link = $_.NvdLink }
+        })
+        $sageResultsForExport = @($sageItems | ForEach-Object {
+            $item = @{}
+            if ($_.keyword)        { $item.keyword = $_.keyword }
+            if ($_.title)          { $item.title = $_.title }
+            if ($_.severity)       { $item.severity = $_.severity }
+            if ($_.category)       { $item.category = $_.category }
+            if ($_.summary)        { $item.summary = $_.summary }
+            if ($_.source_site)    { $item.source_site = $_.source_site }
+            if ($_.date_published) { $item.date_published = $_.date_published }
+            if ($_.link)           { $item.link = $_.link }
+            $item
+        })
+
         $auditJsonObj = @{
             metadata = @{
                 tool          = "Look4Gold13"
@@ -1442,6 +1512,17 @@ if ($Script:AuditLogEntries.Count -gt 0 -and -not $NoExport) {
                 keywords      = $keywords
                 days_back     = $DaysBack
                 total_events  = $Script:AuditLogEntries.Count
+            }
+            scan_results = @{
+                dork_findings  = $dorkResultsForExport
+                cve_findings   = $cveResultsForExport
+                genai_findings = $sageResultsForExport
+                summary        = @{
+                    total_dork_results  = $allResults.Count
+                    total_cve_results   = $totalCves
+                    total_genai_findings = $sageItems.Count
+                    cve_severity_counts = $severityCounts
+                }
             }
             audit_events = @($Script:AuditLogEntries)
         }
