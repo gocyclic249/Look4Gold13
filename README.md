@@ -1,8 +1,8 @@
 # Look4Gold13
 
-**AU-13 Publicly Available Content (PAC) scanner for NIST SP 800-53 compliance.**
+**AU-13 Publicly Available Content (PAC) scanner + CVE monitor with NIST AU-2/AU-3 audit logging.**
 
-Look4Gold13 automates the process of searching for your organization's publicly exposed information across the internet. It combines DuckDuckGo search dorking with GenAI-powered intelligence gathering (via Ask Sage) to find leaked credentials, breached data, exposed documents, misconfigured cloud resources, and more. Results are compiled into an HTML report with severity ratings.
+Look4Gold13 automates the process of searching for your organization's publicly exposed information across the internet. It combines DuckDuckGo search dorking, NIST NVD CVE lookups, and GenAI-powered intelligence gathering (via Ask Sage) to find leaked credentials, breached data, exposed documents, misconfigured cloud resources, known vulnerabilities, and more. Results are compiled into an HTML report with severity ratings, and every scan action is recorded in a NIST-compliant audit log.
 
 ---
 
@@ -10,14 +10,19 @@ Look4Gold13 automates the process of searching for your organization's publicly 
 
 1. **Search Dorking** -- Takes your keywords (company names, domains, project names, etc.) and combines them with a library of search dorks targeting paste sites, code repos, breach databases, and security news sources. Each keyword is searched against every dork via DuckDuckGo.
 
-2. **GenAI Intelligence** -- If an Ask Sage API key is configured, a **separate GenAI query runs for each keyword** immediately after that keyword's dork searches complete. Each query sends the keyword (along with any URLs discovered during its dorking) to a Gemini 2.5 Flash model with live web search enabled. The GenAI searches broadly across the internet for recent cyber security events and assigns a severity rating (Critical, High, Medium, Low, or Informational) to each finding. Running per-keyword gives the GenAI more focused results than a single combined query.
+2. **CVE Monitoring** -- Queries the NIST National Vulnerability Database (NVD) API for CVEs matching each keyword. CVEs are filtered by publication date (configurable lookback, default 7 days) and include CVSS severity scores mapped to the same Critical/High/Medium/Low/Informational levels used throughout the tool. CVE lookup is on by default.
 
-3. **Reporting** -- All results are compiled into three output files:
-   - **HTML Report** (`Look4Gold13_Report_<timestamp>.html`) -- A styled, dark-themed report organized by keyword. Each keyword section shows its GenAI findings (with color-coded severity badges) followed by its dork results. This is the primary deliverable.
-   - **JSON** (`Look4Gold13_AGI_<timestamp>.json`) -- Structured GenAI results with metadata, suitable for ingestion into other tools or SIEMs.
-   - **CSV** (`Look4Gold13_Results_<timestamp>.csv`) -- Flat export of all dork results (Title, Summary, URL).
+3. **GenAI Intelligence** -- If an Ask Sage API key is configured, a **separate GenAI query runs for each keyword** after that keyword's dork searches and CVE lookup complete. Each query sends the keyword, discovered URLs, and CVE findings to a Gemini 2.5 Flash model with live web search enabled. The GenAI searches broadly across the internet for recent cybersecurity events and assigns severity ratings. Running per-keyword gives the GenAI more focused, contextual results.
 
-**Note:** Some variable names, parameter flags (e.g., `-AgiOnly`), and output filenames (e.g., `Look4Gold13_AGI_*.json`) still use "AGI" instead of "GenAI". This is a naming mix-up from early development — the feature uses generative AI (GenAI), not artificial general intelligence (AGI). The code-level names are kept as-is to avoid breaking changes.
+4. **NIST AU-2/AU-3 Audit Logging** -- Every significant scan event is recorded in a structured audit log that satisfies NIST SP 800-53 AU-2 (auditable event definitions) and AU-3 (audit record content). Each record contains: event type, timestamp (ISO 8601), source system/host, source function, outcome (Success/Failure/Warning), and subject identity.
+
+5. **Reporting** -- All results are compiled into output files in a per-scan folder (`Outputs/Scan_<timestamp>/`):
+   - **HTML Report** -- A styled, dark-themed report organized by keyword. GenAI findings are always visible; CVE results and dork results are in collapsible sections for readability.
+   - **NIST Audit Log (JSON)** -- Structured audit event log with metadata, suitable for SIEM ingestion or compliance review.
+   - **NIST Audit Log (CSV)** -- Same audit data in Excel-compatible format for spreadsheet analysis.
+   - **NIST Audit Log (NDJSON)** -- Real-time event stream written as the scan runs (one JSON object per line, append-safe).
+
+**Note:** Some variable names, parameter flags (e.g., `-AgiOnly`), and output filenames (e.g., `Look4Gold13_AGI_*.json`) still use "AGI" instead of "GenAI". This is a naming artifact from early development -- the feature uses generative AI (GenAI), not artificial general intelligence (AGI). Code-level names are kept as-is to avoid breaking changes.
 
 ---
 
@@ -28,25 +33,35 @@ Look4Gold13 automates the process of searching for your organization's publicly 
 Copy-Item config/keywords.example.txt config/keywords.txt
 # Edit keywords.txt with your organization-specific terms
 
-# 2. Run a scan
+# 2. Set up search dorks
+Copy-Item config/sources.example.json config/sources.json
+# Optionally edit sources.json to customize dorks
+
+# 3. Run a scan (includes DDG dorks + CVE lookup + GenAI if key is set)
 .\Look4Gold13.ps1
 
-# 3. Run with fewer dorks for a quick test
+# 4. Run with fewer dorks for a quick test
 .\Look4Gold13.ps1 -MaxDorks 4
 
-# 4. Run silently (no console output, files only)
-.\Look4Gold13.ps1 -Silent
+# 5. CVE-only mode (fast -- just NVD queries, no dork scanning or GenAI)
+.\Look4Gold13.ps1 -CveOnly
 
-# 5. GenAI-only mode (skip dork scanning, just Ask Sage)
+# 6. GenAI-only mode (skip dork scanning and CVE, just Ask Sage)
 .\Look4Gold13.ps1 -AgiOnly
 
-# 6. Custom timing (slower to be gentler on DDG)
+# 7. Search further back in time (14 days instead of default 7)
+.\Look4Gold13.ps1 -DaysBack 14
+
+# 8. Run silently (no console output, files only)
+.\Look4Gold13.ps1 -Silent
+
+# 9. Custom timing (slower to be gentler on DDG)
 .\Look4Gold13.ps1 -BaseDelay 90 -MinJitter 10 -MaxJitter 30
 ```
 
 ### Ask Sage (GenAI) Setup
 
-The GenAI query is optional but recommended. Without it you still get all the dork results; with it you get an additional layer of AI-driven intelligence.
+The GenAI query is optional but recommended. Without it you still get dork results and CVE findings; with it you get an additional layer of AI-driven intelligence.
 
 ```powershell
 # Set your Ask Sage API key (get one from https://api.genai.army.mil > Settings > Account > Manage API Keys)
@@ -55,6 +70,18 @@ $env:ASK_SAGE_API_KEY = "your-api-key-here"
 # Or set it permanently so it persists across sessions:
 [System.Environment]::SetEnvironmentVariable("ASK_SAGE_API_KEY", "your-key", "User")
 # Restart PowerShell after setting this
+```
+
+### NVD API Key (Optional)
+
+CVE lookups work without an API key but are rate-limited to 5 requests per 30 seconds. With a free NVD API key, you get 50 requests per 30 seconds.
+
+```powershell
+# Request a key at: https://nvd.nist.gov/developers/request-an-api-key
+$env:NVD_API_KEY = "your-nvd-api-key-here"
+
+# Or set it permanently:
+[System.Environment]::SetEnvironmentVariable("NVD_API_KEY", "your-key", "User")
 ```
 
 ### Custom Persona (Recommended)
@@ -83,16 +110,6 @@ You provide accurate answers, but if you are asked a question that is nonsense, 
 
 The script calls the `get-personas` API on each run to resolve the ID automatically -- just create the persona and go.
 
-### GenAI-Only Mode
-
-To skip dork scanning and run only the Ask Sage GenAI query:
-
-```powershell
-.\Look4Gold13.ps1 -AgiOnly
-```
-
-This is useful for quick intelligence checks without the time cost of DDG scanning.
-
 ---
 
 ## How the Search Works (and Why It's Designed This Way)
@@ -109,7 +126,7 @@ Before any automated queries begin, the script opens the DuckDuckGo HTML endpoin
 
 When a browser visits DDG, it establishes cookies and a session that DDG's anti-bot system recognizes. Subsequent requests from the same IP address are treated more leniently because DDG sees that there's a "real" browser session active on that IP. Without this priming step, automated requests get flagged much faster.
 
-The window is opened minimized so it stays out of your way, and it's automatically closed when the scan completes.
+The window is opened minimized (using off-screen positioning for Chromium browsers and Win32 minimize calls), and it's automatically closed when the scan completes.
 
 ### Identity Rotation
 
@@ -156,7 +173,7 @@ If DDG does return a CAPTCHA despite all precautions, the script doesn't just gi
 1. It detects the CAPTCHA (HTTP 202, "anomaly-modal", "automated requests" text, etc.)
 2. Applies exponential backoff: 60s, then 120s, then 240s, up to 480s
 3. Retries with a completely fresh identity and rebuilt URL
-4. If the retry also hits a CAPTCHA, it halts DDG queries for this keyword (but still runs the per-keyword GenAI query with whatever results were collected, and continues to subsequent keywords)
+4. If the retry also hits a CAPTCHA, it halts DDG queries for this keyword (but still runs the per-keyword CVE lookup and GenAI query with whatever results were collected, and continues to subsequent keywords)
 
 ---
 
@@ -169,11 +186,32 @@ If DDG does return a CAPTCHA despite all precautions, the script doesn't just gi
 | `-BaseDelay` | int | `120` | Base seconds to wait between DDG requests |
 | `-MinJitter` | int | `5` | Minimum random seconds added to the delay |
 | `-MaxJitter` | int | `15` | Maximum random seconds added to the delay |
-| `-VerboseOutput` | switch | off | Show extra debug info (saved HTML on empty results, etc.) |
-| `-OutputFile` | string | auto-timestamped | Custom path for the CSV export |
-| `-NoExport` | switch | off | Suppress all file output (CSV, JSON, HTML) |
+| `-DaysBack` | int | `7` | Lookback period in days for both CVE and GenAI searches |
+| `-VerboseOutput` | switch | off | Show extra debug info (saved HTML on empty results, NVD pagination, etc.) |
+| `-OutputFile` | string | auto | Custom path for the HTML report |
+| `-NoExport` | switch | off | Suppress all file output (HTML, audit logs) |
 | `-Silent` | switch | off | Suppress all console output. Files are still written |
 | `-AgiOnly` | switch | off | Skip dork scanning, run only the Ask Sage GenAI query |
+| `-CveOnly` | switch | off | Run only CVE lookup (no dork scanning, no GenAI) |
+| `-NoCve` | switch | off | Disable CVE lookup (dorks + GenAI only) |
+| `-CveMaxResults` | int | `100` | Maximum CVE results per keyword |
+| `-AuditLogFile` | string | auto | Custom path for the NDJSON audit log |
+| `-NoAuditLog` | switch | off | Disable audit logging |
+
+**Mutually exclusive flags:** `-CveOnly` cannot be used with `-AgiOnly` or `-NoCve`.
+
+---
+
+## Per-Keyword Scan Flow
+
+For each keyword, the scan runs three phases in order:
+
+```
+Dork Searches  -->  CVE Lookup  -->  GenAI Query
+(DDG dorking)      (NIST NVD)      (Ask Sage)
+```
+
+CVE results are discovered before the GenAI query runs, so they are included as additional context in the GenAI prompt. This gives the AI richer analysis -- it can correlate CVE findings with news, breaches, and other intelligence.
 
 ---
 
@@ -186,22 +224,26 @@ Scan duration depends on the number of keywords, the number of dork groups, and 
 | Phase | Time | Notes |
 |---|---|---|
 | DDG dork searches | ~28 min | 13 query groups x ~130s average delay |
+| NVD CVE lookup | ~6-12 sec | 1-2 API calls (rate-limited without key) |
 | Ask Sage GenAI query | ~30 sec | Single API call with live web search |
-| **Total per keyword** | **~28-29 min** | |
+| **Total per keyword** | **~29 min** | |
 
 **Multi-keyword examples:**
 
-| Keywords | Dorks Mode | Estimated Total |
+| Keywords | Mode | Estimated Total |
 |---|---|---|
-| 1 keyword | Full (all dorks) | ~29 min |
-| 3 keywords | Full (all dorks) | ~87 min (~1.5 hrs) |
-| 5 keywords | Full (all dorks) | ~145 min (~2.4 hrs) |
+| 1 keyword | Full (dorks + CVE + GenAI) | ~29 min |
+| 3 keywords | Full (dorks + CVE + GenAI) | ~87 min (~1.5 hrs) |
+| 5 keywords | Full (dorks + CVE + GenAI) | ~145 min (~2.4 hrs) |
 | 5 keywords | `-MaxDorks 4` | ~35 min |
+| Any count | `-CveOnly` | ~10 sec per keyword |
 | Any count | `-AgiOnly` | ~30 sec per keyword |
 
 **Tips for faster scans:**
+- Use `-CveOnly` for a quick vulnerability check (just NVD queries, very fast)
 - Use `-MaxDorks N` to limit to the first N dorks (e.g., `-MaxDorks 4` runs only 4 groups)
-- Use `-AgiOnly` to skip dork scanning entirely (just the GenAI intelligence query)
+- Use `-AgiOnly` to skip dork scanning and CVE, running just the GenAI query
+- Use `-NoCve` to skip CVE lookups if you only want dork + GenAI results
 - Lower `-BaseDelay` to reduce wait time between queries (increases CAPTCHA risk)
 
 The script displays its own time estimate at the start of each run based on your actual parameters.
@@ -210,13 +252,44 @@ The script displays its own time estimate at the start of each run based on your
 
 ## Output Files
 
-All output files are written to the script's directory with timestamps in the filename.
+All output files are written to a per-scan folder: `Outputs/Scan_<yyyy-MM-dd_HHmm>/`
 
 | File | Format | Contents |
 |---|---|---|
-| `Look4Gold13_Report_<timestamp>.html` | HTML | Report organized by keyword -- each section shows GenAI findings (with severity badges) then dork results. Open in any browser. |
-| `Look4Gold13_AGI_<timestamp>.json` | JSON | Structured GenAI results tagged by keyword: `{ metadata: {...}, results: [{keyword, severity, title, summary, link, ...}] }` |
-| `Look4Gold13_Results_<timestamp>.csv` | CSV | Flat dork results: Title, Summary, URL |
+| `Look4Gold13_Report_<timestamp>.html` | HTML | Report organized by keyword. GenAI findings always visible; CVE and dork results in collapsible sections. |
+| `Look4Gold13_Audit_<timestamp>.json` | JSON | NIST AU-2/AU-3 compliant audit log: `{ metadata: {...}, audit_events: [{timestamp, event_type, source_system, outcome, subject, ...}] }` |
+| `Look4Gold13_Audit_<timestamp>.csv` | CSV | Same audit data in Excel-compatible tabular format |
+| `Look4Gold13_Audit_<timestamp>.jsonl` | NDJSON | Real-time event stream (one JSON object per line, written as the scan runs) |
+
+### Audit Log Event Types (AU-2)
+
+The following events are recorded to satisfy NIST SP 800-53 AU-2:
+
+| Event Type | Category | Description |
+|---|---|---|
+| `SCAN_START` / `SCAN_COMPLETE` | Execution | Scan lifecycle with parameters and summary |
+| `CONFIG_LOAD` | Configuration | Keywords or sources file loaded |
+| `KEYWORD_START` / `KEYWORD_COMPLETE` | Execution | Per-keyword processing |
+| `DORK_QUERY` | Access | DDG search query executed |
+| `CAPTCHA_DETECTED` / `CAPTCHA_BLOCKED` | Security | Rate limiting events |
+| `CVE_QUERY_START` / `CVE_QUERY_COMPLETE` / `CVE_QUERY_ERROR` | Access | NVD API calls |
+| `GENAI_QUERY` / `GENAI_RESPONSE` / `GENAI_ERROR` | Access | Ask Sage API calls |
+| `PERSONA_LOOKUP` | Configuration | Ask Sage persona resolved |
+| `DATA_EXPORT` | Export | Output file written |
+| `BROWSER_OPEN` / `BROWSER_CLOSE` | System | DDG session priming |
+
+### Audit Record Content (AU-3)
+
+Each audit record contains the six fields required by NIST SP 800-53 AU-3:
+
+| AU-3 Requirement | Field | Example |
+|---|---|---|
+| (a) Type of event | `event_type` | `CVE_QUERY_COMPLETE` |
+| (b) When it occurred | `timestamp` | `2026-02-18T14:30:00.000-05:00` |
+| (c) Where it occurred | `source_system` + `source_host` | `Look4Gold13` on `WORKSTATION01` |
+| (d) Source of event | `source_function` | `Invoke-NvdCveSearch` |
+| (e) Outcome | `outcome` | `Success` / `Failure` / `Warning` |
+| (f) Identity | `subject` | Username, keyword, or API name |
 
 ---
 
@@ -228,8 +301,10 @@ All configuration lives in the `config/` folder:
 |---|---|---|
 | `keywords.txt` | Your search keywords (one per line) | No (gitignored) |
 | `keywords.example.txt` | Starter keywords showing the format | Yes |
-| `sources.json` | Search dorks -- DDG site dorks + breach/news dorks | Yes |
+| `sources.json` | Search dorks -- DDG site dorks + breach/news dorks | No (gitignored) |
 | `sources.example.json` | Default dorks (reference copy) | Yes |
+| `au13-config.example.asksage.json` | Ask Sage config template (reference) | Yes |
+| `au13-config.example.grok.json` | Grok/xAI config template (reference) | Yes |
 
 ### Keywords
 
@@ -245,6 +320,12 @@ Add organization-specific keywords like company names, domain names, project cod
 
 ### Search Dorks
 
+Copy the example and customize:
+
+```powershell
+Copy-Item config/sources.example.json config/sources.json
+```
+
 The `sources.json` file defines two groups of dorks:
 
 - **`ddgDorks`** -- Target specific sites where leaked content commonly appears (Pastebin, GitHub, GitHub Gist, Reddit, Dropbox, Google Docs, Archive.org, and many paste sites).
@@ -252,23 +333,24 @@ The `sources.json` file defines two groups of dorks:
 
 Both groups are always included in every scan. Breach dorks run first since they tend to be the most actionable and DDG is least likely to be rate-limiting at the start of a scan.
 
-You can edit `sources.json` directly to add or remove dorks. See `sources.example.json` as a reference.
+Edit `sources.json` to add or remove dorks. See `sources.example.json` as a reference for the default set.
 
 ---
 
 ## How a Scan Runs (Step by Step)
 
 1. **Load configuration** -- Keywords from `keywords.txt`, dorks from `sources.json`.
-2. **Group dorks** -- All `site:` dorks are combined into OR queries to minimize request count.
-3. **Open DDG browser session** -- A minimized browser window opens `html.duckduckgo.com` to prime the session.
-4. **Resolve persona** -- If `ASK_SAGE_API_KEY` is set, look up the "Look4Gold13" custom persona once.
-5. **Per-keyword loop** -- For each keyword:
+2. **Initialize audit log** -- Create the `Outputs/Scan_<timestamp>/` folder and begin NDJSON event logging.
+3. **Group dorks** -- All `site:` dorks are combined into OR queries to minimize request count.
+4. **Open DDG browser session** -- A minimized browser window opens `html.duckduckgo.com` to prime the session.
+5. **Resolve persona** -- If `ASK_SAGE_API_KEY` is set, look up the "Look4Gold13" custom persona once.
+6. **Per-keyword loop** -- For each keyword:
    - **Dork searches** -- Execute each dork group query with fresh browser identity, parse results, wait a randomized delay.
-   - **GenAI query** -- Send the keyword and its discovered URLs to Ask Sage for AI-powered analysis with severity ratings.
-6. **Collect and deduplicate** -- Results are deduplicated by keyword+URL.
-7. **Export CSV** -- Dork results are saved to a CSV file.
-8. **Export JSON** -- GenAI results (tagged by keyword) are saved as structured JSON.
-9. **Generate HTML report** -- Results are organized by keyword, each section showing GenAI findings then dork results.
+   - **CVE lookup** -- Query the NIST NVD API for CVEs matching the keyword (published in the last N days).
+   - **GenAI query** -- Send the keyword, discovered URLs, and CVE findings to Ask Sage for AI-powered analysis with severity ratings.
+7. **Results summary** -- Print scan statistics (duration, result counts, CAPTCHA events).
+8. **Export NIST audit log** -- Write audit events to JSON and CSV in the scan output folder.
+9. **Generate HTML report** -- Results organized by keyword with collapsible CVE and dork sections.
 10. **Cleanup** -- The DDG browser window is closed.
 
 ---
@@ -276,11 +358,23 @@ You can edit `sources.json` directly to add or remove dorks. See `sources.exampl
 ## Example Usage
 
 ```powershell
-# Full scan with defaults (all dorks, 120s+jitter between requests)
+# Full scan with defaults (dorks + CVE + GenAI, 7-day lookback)
 .\Look4Gold13.ps1
 
 # Quick test: only first 2 dorks, faster timing
 .\Look4Gold13.ps1 -MaxDorks 2 -BaseDelay 30
+
+# CVE-only: fast vulnerability check, no DDG or GenAI
+.\Look4Gold13.ps1 -CveOnly
+
+# CVE-only with 30-day lookback
+.\Look4Gold13.ps1 -CveOnly -DaysBack 30
+
+# Full scan with 14-day lookback for CVE and GenAI
+.\Look4Gold13.ps1 -DaysBack 14
+
+# Skip CVE lookup (dorks + GenAI only)
+.\Look4Gold13.ps1 -NoCve
 
 # Silent mode for scheduled tasks / automation
 .\Look4Gold13.ps1 -Silent
@@ -288,22 +382,34 @@ You can edit `sources.json` directly to add or remove dorks. See `sources.exampl
 # Custom keywords file
 .\Look4Gold13.ps1 -KeywordFile "C:\scans\my-keywords.txt"
 
-# Custom output location
-.\Look4Gold13.ps1 -OutputFile "C:\reports\scan-results.csv"
+# Custom HTML report location
+.\Look4Gold13.ps1 -OutputFile "C:\reports\scan-report.html"
 
 # GenAI-only: just the Ask Sage intelligence query
 .\Look4Gold13.ps1 -AgiOnly
 
-# Maximum stealth: slow and steady (default is already 120s base)
+# Disable audit logging (not recommended for compliance)
+.\Look4Gold13.ps1 -NoAuditLog
+
+# Maximum stealth: slow and steady
 .\Look4Gold13.ps1 -BaseDelay 180 -MinJitter 15 -MaxJitter 45
 ```
+
+---
+
+## Environment Variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `ASK_SAGE_API_KEY` | No | Ask Sage API key for GenAI queries. Without it, GenAI is skipped. |
+| `NVD_API_KEY` | No | NIST NVD API key for higher CVE query rate limits (50 vs 5 req/30s). |
 
 ---
 
 ## Requirements
 
 - **PowerShell 5.1+** (ships with Windows 10/11) or PowerShell 7+
-- **Internet access** to DuckDuckGo and optionally to `api.genai.army.mil` (Ask Sage)
+- **Internet access** to DuckDuckGo, `services.nvd.nist.gov` (NVD), and optionally `api.genai.army.mil` (Ask Sage)
 - **A web browser** installed on the machine (Chrome, Edge, Firefox, or Brave -- used for DDG session priming)
 
 ---
