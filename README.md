@@ -64,7 +64,7 @@ Copy-Item config/sources.example.json config/sources.json
 The GenAI query is optional but recommended. Without it you still get dork results and CVE findings; with it you get an additional layer of AI-driven intelligence.
 
 ```powershell
-# Set your Ask Sage API key (get one from https://api.genai.army.mil > Settings > Account > Manage API Keys)
+# Set your Ask Sage API key (get one from https://chat.genai.army.mil/ > Settings > Account > Manage API Keys)
 $env:ASK_SAGE_API_KEY = "your-api-key-here"
 
 # Or set it permanently so it persists across sessions:

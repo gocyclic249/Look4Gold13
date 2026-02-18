@@ -31,7 +31,7 @@ still get all the dork results and CVE findings.
 
 Setup:
   1. Get an API key from:
-       https://api.genai.army.mil > Settings > Account > Manage API Keys
+       https://chat.genai.army.mil/ > Settings > Account > Manage API Keys
 
   2. Set the environment variable:
        $env:ASK_SAGE_API_KEY = "your-key-here"
