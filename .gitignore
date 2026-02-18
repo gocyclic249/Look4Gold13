@@ -5,9 +5,14 @@
 # Logs and output
 *.log
 *.xlsx
-*.csv
 Look4Gold13_AGI_*.txt
+Look4Gold13_AGI_*.json
 Look4Gold13_Results_*.txt
+Look4Gold13_Results_*.csv
+Look4Gold13_Report_*.html
+Look4Gold13_Audit_*.jsonl
+Look4Gold13_Audit_*.json
+Look4Gold13_Audit_*.csv
 /Output/
 /Reports/
 debug_*.html
