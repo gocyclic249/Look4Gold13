@@ -25,19 +25,36 @@ ASK SAGE API KEY
 ------------------------------------
 The GenAI query is optional. If the ASK_SAGE_API_KEY environment variable
 is set, the script sends a separate GenAI query for each keyword (with
-that keyword's dork-discovered URLs as context) to Ask Sage for
-AI-powered analysis with severity ratings. Without it, you still get
-all the dork results.
+that keyword's dork-discovered URLs and CVE findings as context) to
+Ask Sage for AI-powered analysis with severity ratings. Without it, you
+still get all the dork results and CVE findings.
 
 Setup:
   1. Get an API key from:
-       https://api.genai.army.mil > Settings > Account > Manage API Keys
+       https://chat.genai.army.mil/ > Settings > Account > Manage API Keys
 
   2. Set the environment variable:
        $env:ASK_SAGE_API_KEY = "your-key-here"
 
      Or set it permanently (persists across sessions):
        [System.Environment]::SetEnvironmentVariable("ASK_SAGE_API_KEY", "your-key", "User")
+       # Restart PowerShell after setting this
+
+
+NVD API KEY (optional)
+------------------------------------
+CVE lookups work without an API key but are rate-limited to 5 requests
+per 30 seconds. With a free NVD API key, you get 50 requests per 30s.
+
+Setup:
+  1. Request a key at:
+       https://nvd.nist.gov/developers/request-an-api-key
+
+  2. Set the environment variable:
+       $env:NVD_API_KEY = "your-key-here"
+
+     Or set it permanently:
+       [System.Environment]::SetEnvironmentVariable("NVD_API_KEY", "your-key", "User")
        # Restart PowerShell after setting this
 
 
@@ -102,19 +119,16 @@ automatically, so there is nothing else to configure.
 
 SEARCH SOURCES FILE (sources.json)
 ------------------------------------
-The sources file defines the search dorks used by the scanner. The default
-file ships with the repo and works out of the box.
+The sources file defines the search dorks used by the scanner.
 
-To customize:
-  1. Edit config/sources.json directly. Use sources.example.json as a
-     reference if you want to reset a section to defaults.
+Setup:
+  1. Copy the example file to create your active config:
+       Copy-Item config/sources.example.json config/sources.json
 
-  2. Each section is replaced independently. If you provide ddgDorks, your
-     entire list replaces the default DDG dorks. Omit a section (or set it
-     to an empty array []) to keep the built-in defaults for that section.
+  2. Edit config/sources.json to add or remove dorks. Use
+     sources.example.json as a reference for the default set.
 
-  3. This file is NOT gitignored since it contains non-sensitive search
-     patterns. Your changes will be tracked by git.
+  3. sources.json is gitignored - your customizations stay local.
 
 Sections:
   ddgDorks      DuckDuckGo search dorks including paste sites (label + dork query string)
@@ -136,18 +150,60 @@ SCRIPT PARAMETERS
 -BaseDelay       Base seconds between DDG requests (default: 120)
 -MinJitter       Min random seconds added to delay (default: 5)
 -MaxJitter       Max random seconds added to delay (default: 15)
--VerboseOutput   Show extra debug info
--OutputFile      Custom path for CSV export
--NoExport        Suppress all file output (CSV, JSON, HTML)
+-DaysBack        Lookback period in days for CVE + GenAI searches (default: 7)
+-VerboseOutput   Show extra debug info (NVD pagination, empty DDG results, etc.)
+-OutputFile      Custom path for the HTML report
+-NoExport        Suppress all file output (HTML, audit logs)
 -Silent          Suppress all console output (files still written)
--AgiOnly         Skip dork scanning, run only the Ask Sage GenAI query
+-AgiOnly         Skip dork scanning and CVE, run only Ask Sage GenAI query
+-CveOnly         Run only CVE lookup (no dork scanning, no GenAI)
+-NoCve           Disable CVE lookup (dorks + GenAI only)
+-CveMaxResults   Max CVE results per keyword (default: 100)
+-AuditLogFile    Custom path for the NDJSON audit log stream
+-NoAuditLog      Disable audit logging (not recommended for compliance)
+
+Mutually exclusive: -CveOnly cannot be combined with -AgiOnly or -NoCve.
 
 
 OUTPUT FILES
 ------------------------------------
-Look4Gold13_Report_<timestamp>.html   HTML report grouped by keyword (GenAI + dork results per keyword)
-Look4Gold13_AGI_<timestamp>.json      Structured GenAI results tagged by keyword, with severity
-Look4Gold13_Results_<timestamp>.csv   Flat dork results (Title, Summary, URL)
+All outputs are written to: Outputs/Scan_<yyyy-MM-dd_HHmm>/
+
+Look4Gold13_Report_<timestamp>.html     HTML report (GenAI visible, CVE + dorks collapsible)
+Look4Gold13_Audit_<timestamp>.json      NIST AU-2/AU-3 audit log (structured JSON with metadata)
+Look4Gold13_Audit_<timestamp>.csv       NIST AU-2/AU-3 audit log (Excel-compatible CSV)
+Look4Gold13_Audit_<timestamp>.jsonl     Real-time NDJSON event stream (one JSON record per line)
+
+
+NIST AU-2/AU-3 AUDIT LOGGING
+------------------------------------
+Every significant scan event is recorded in a structured audit log.
+
+AU-2 (Audit Events) - The following event types are defined:
+  AUDIT_LOG_INIT           Audit log file initialized
+  SCAN_START / COMPLETE    Scan lifecycle (includes parameters and summary)
+  CONFIG_LOAD              Keywords or sources file loaded
+  KEYWORD_START / COMPLETE Per-keyword processing
+  CVE_QUERY_START / COMPLETE / ERROR   NVD API calls
+  GENAI_QUERY / RESPONSE / ERROR       Ask Sage API calls
+  CAPTCHA_DETECTED / BLOCKED           DDG rate limiting events
+  PERSONA_LOOKUP           Ask Sage persona resolved
+  DATA_EXPORT              Output file written
+  BROWSER_OPEN / CLOSE     DDG session priming
+
+AU-3 (Content of Audit Records) - Each record contains:
+  (a) event_type       What happened
+  (b) timestamp        When it happened (ISO 8601 with timezone)
+  (c) source_system    Where it happened (Look4Gold13 + hostname)
+  (d) source_function  Source module or function name
+  (e) outcome          Result: Success, Failure, or Warning
+  (f) subject          Who/what was involved (user, keyword, API)
+
+
+ENVIRONMENT VARIABLES
+------------------------------------
+ASK_SAGE_API_KEY    (optional) Ask Sage API key for GenAI queries
+NVD_API_KEY         (optional) NIST NVD API key for faster CVE lookups
 
 
 ASK SAGE SETTINGS (for advanced users)
@@ -162,7 +218,8 @@ These settings are hardcoded in the script but documented here for reference:
 
 The GenAI prompt requests a JSON array with severity ratings
 (Critical, High, Medium, Low, Informational) and AU-13 disclosure
-categories for each finding. A separate query runs per keyword.
+categories for each finding. CVE findings are included as additional
+context in the GenAI prompt. A separate query runs per keyword.
 
 
 FILES IN THIS FOLDER
@@ -172,5 +229,5 @@ au13-config.example.asksage.json  Ask Sage config template (reference)
 au13-config.example.grok.json     Grok (xAI) config template (reference)
 keywords.example.txt              Starter keywords with example phrases
 keywords.txt                      Your keywords (gitignored, create from example)
-sources.json                      Search dorks and paste site config (editable)
+sources.json                      Your search dorks (gitignored, create from example)
 sources.example.json              Default search sources (reference copy)
