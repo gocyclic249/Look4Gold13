@@ -13,6 +13,7 @@ Look4Gold13_Report_*.html
 Look4Gold13_Audit_*.jsonl
 Look4Gold13_Audit_*.json
 Look4Gold13_Audit_*.csv
+/Outputs/
 /Output/
 /Reports/
 debug_*.html
@@ -28,7 +29,10 @@ menlo_*_debug.html
 keywords.txt
 keywords.csv
 *.keywords
+
+# Active config files (use .example files as templates)
 config/au13-config.json
+config/sources.json
 
 # OS files
 Thumbs.db

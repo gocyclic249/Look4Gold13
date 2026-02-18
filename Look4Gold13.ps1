@@ -687,7 +687,8 @@ function Invoke-DdgSearch {
 
     # 6. Debug: save HTML if no results and verbose
     if ($results.Count -eq 0 -and $VerboseOutput) {
-        $debugFile = Join-Path $PSScriptRoot "debug_ddg_$($GroupLabel -replace '[^a-zA-Z0-9]','_').html"
+        $debugDir = if ($Script:ScanOutputDir) { $Script:ScanOutputDir } else { $PSScriptRoot }
+        $debugFile = Join-Path $debugDir "debug_ddg_$($GroupLabel -replace '[^a-zA-Z0-9]','_').html"
         $html | Out-File -FilePath $debugFile -Encoding utf8
         Write-Host "    [Debug] No results - HTML saved to $debugFile" -ForegroundColor DarkGray
     }
@@ -985,6 +986,35 @@ $scanStart = Get-Date
 $elapsed = New-TimeSpan
 $allSageResults = [ordered]@{}
 
+# Create per-scan output directory: Outputs/Scan_<date_time>/
+$scanFolderName = "Scan_$(Get-Date -Format 'yyyy-MM-dd_HHmm')"
+$Script:ScanOutputDir = Join-Path (Join-Path $PSScriptRoot 'Outputs') $scanFolderName
+if (-not $NoExport) {
+    try {
+        New-Item -Path $Script:ScanOutputDir -ItemType Directory -Force | Out-Null
+        Write-Host "  Output folder: $($Script:ScanOutputDir)" -ForegroundColor DarkGray
+    } catch {
+        Write-Host "  WARNING: Could not create output folder, falling back to script root" -ForegroundColor DarkYellow
+        $Script:ScanOutputDir = $PSScriptRoot
+    }
+} else {
+    $Script:ScanOutputDir = $PSScriptRoot
+}
+
+# Move the NDJSON audit log into the output directory (if logging is active and not custom path)
+if ($Script:AuditLogPath -and -not $AuditLogFile -and -not $NoExport) {
+    $oldAuditPath = $Script:AuditLogPath
+    $Script:AuditLogPath = Join-Path $Script:ScanOutputDir (Split-Path $oldAuditPath -Leaf)
+    # Move any early entries already written to old location
+    if (Test-Path $oldAuditPath) {
+        try {
+            Move-Item -Path $oldAuditPath -Destination $Script:AuditLogPath -Force
+        } catch {
+            # If move fails, just continue with new path
+        }
+    }
+}
+
 if (-not $AgiOnly -and -not $CveOnly) {
 
 $dorks = Import-Sources -MaxDorks $MaxDorks
@@ -1032,12 +1062,40 @@ $seenUrls = @{}
 # Open DDG in a new minimized browser window to prime the session
 $ddgProcess = $null
 $ddgBrowserName = $null
+$Script:NewBrowserPIDs = @()
 try {
     Write-Host "[Browser] Opening DuckDuckGo to prime session..." -ForegroundColor DarkGray
 
-    # Detect default browser and launch with --new-window so it doesn't open as a tab
+    # Load Win32 window management functions (used for minimize + close)
+    try {
+        Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class Win32Window {
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+
+    [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    public const int SW_MINIMIZE = 6;
+    public const int SW_HIDE = 0;
+    public const uint WM_CLOSE = 0x0010;
+}
+"@
+    } catch {
+        # Type may already be loaded from a previous run
+    }
+
+    # Detect default browser from registry
     $browserPath = $null
-    $browserArgs = @()
     try {
         $progId = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice' -ErrorAction Stop).ProgId
         $command = (Get-ItemProperty "Registry::HKEY_CLASSES_ROOT\$progId\shell\open\command" -ErrorAction Stop).'(default)'
@@ -1051,7 +1109,15 @@ try {
     if ($browserPath -and (Test-Path $browserPath)) {
         $ddgBrowserName = [System.IO.Path]::GetFileNameWithoutExtension($browserPath)
         $preBrowserPIDs = @(Get-Process -Name $ddgBrowserName -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-        $browserArgs = @('--new-window', 'https://html.duckduckgo.com/html/')
+
+        # Chromium browsers: --window-position and --window-size force minimized appearance
+        # --new-window prevents merging into existing tabs
+        $browserArgs = @(
+            '--new-window',
+            '--window-position=-32000,-32000',
+            '--window-size=1,1',
+            'https://html.duckduckgo.com/html/'
+        )
         $ddgProcess = Start-Process -FilePath $browserPath -ArgumentList $browserArgs -WindowStyle Minimized -PassThru
     } else {
         $ddgProcess = Start-Process "https://html.duckduckgo.com/html/" -PassThru
@@ -1065,24 +1131,30 @@ try {
         $Script:NewBrowserPIDs = @($postBrowserPIDs | Where-Object { $_ -notin $preBrowserPIDs })
     }
 
-    # Minimize the window via Win32 for the fallback path
-    if ($ddgProcess -and -not $ddgProcess.HasExited) {
-        try {
-            Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32 {
-    [DllImport("user32.dll")]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-}
-"@
-            if ($ddgProcess.MainWindowHandle -ne [IntPtr]::Zero) {
-                [Win32]::ShowWindow($ddgProcess.MainWindowHandle, 6) | Out-Null  # 6 = SW_MINIMIZE
-            }
-        } catch { }
-    }
+    # Force-minimize via Win32 -- handles both the launched process and any merged windows
+    try {
+        # Minimize the original process window if it has one
+        if ($ddgProcess -and -not $ddgProcess.HasExited -and $ddgProcess.MainWindowHandle -ne [IntPtr]::Zero) {
+            [Win32Window]::ShowWindow($ddgProcess.MainWindowHandle, [Win32Window]::SW_MINIMIZE) | Out-Null
+        }
+        # Also minimize any newly spawned browser windows
+        foreach ($newPid in $Script:NewBrowserPIDs) {
+            try {
+                $proc = Get-Process -Id $newPid -ErrorAction SilentlyContinue
+                if ($proc -and $proc.MainWindowHandle -ne [IntPtr]::Zero) {
+                    [Win32Window]::ShowWindow($proc.MainWindowHandle, [Win32Window]::SW_MINIMIZE) | Out-Null
+                }
+            } catch { }
+        }
+    } catch { }
+
+    Write-Host "[Browser] DDG session primed (minimized)." -ForegroundColor DarkGray
+    Write-AuditLog -EventType 'BROWSER_OPEN' -Source 'Main' -Outcome 'Success' `
+        -Message "DDG browser window opened for session priming"
 } catch {
     Write-Host "[Browser] Could not open DuckDuckGo: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    Write-AuditLog -EventType 'BROWSER_OPEN' -Source 'Main' -Outcome 'Failure' `
+        -Message "Could not open DDG browser: $($_.Exception.Message)"
 }
 
 } # end if (-not $AgiOnly -and -not $CveOnly) setup
@@ -1359,7 +1431,7 @@ if ($Script:AuditLogEntries.Count -gt 0 -and -not $NoExport) {
     $auditTimestamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
 
     # NIST Audit Log - JSON format
-    $auditJsonPath = Join-Path $PSScriptRoot "Look4Gold13_Audit_$auditTimestamp.json"
+    $auditJsonPath = Join-Path $Script:ScanOutputDir "Look4Gold13_Audit_$auditTimestamp.json"
     try {
         $auditJsonObj = @{
             metadata = @{
@@ -1383,7 +1455,7 @@ if ($Script:AuditLogEntries.Count -gt 0 -and -not $NoExport) {
     }
 
     # NIST Audit Log - CSV/Excel format
-    $auditCsvPath = Join-Path $PSScriptRoot "Look4Gold13_Audit_$auditTimestamp.csv"
+    $auditCsvPath = Join-Path $Script:ScanOutputDir "Look4Gold13_Audit_$auditTimestamp.csv"
     try {
         $csvRows = @()
         foreach ($entry in $Script:AuditLogEntries) {
@@ -1422,7 +1494,7 @@ if ($hasAnyContent -and -not $NoExport) {
         $reportPath = $OutputFile
         if ($reportPath -notmatch '\.html?$') { $reportPath += '.html' }
     } else {
-        $reportPath = Join-Path $PSScriptRoot "Look4Gold13_Report_$reportTimestamp.html"
+        $reportPath = Join-Path $Script:ScanOutputDir "Look4Gold13_Report_$reportTimestamp.html"
     }
 
     $severityColors = @{
@@ -1583,34 +1655,60 @@ if ($hasAnyContent -and -not $NoExport) {
 
 # Close the DDG browser window we opened at start
 $ddgClosed = $false
-# Try the original process handle first
+
+# Strategy 1: Close original process via CloseMainWindow + Kill fallback
 if ($ddgProcess -and -not $ddgProcess.HasExited) {
     try {
         $ddgProcess.CloseMainWindow() | Out-Null
-        if (-not $ddgProcess.WaitForExit(5000)) { $ddgProcess.Kill() }
-        $ddgClosed = $true
-    } catch { }
-}
-# If the process merged (Chromium), kill the new PIDs we tracked
-if (-not $ddgClosed -and $Script:NewBrowserPIDs -and $Script:NewBrowserPIDs.Count -gt 0) {
-    try {
-        foreach ($pid in $Script:NewBrowserPIDs) {
-            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+        if (-not $ddgProcess.WaitForExit(3000)) {
+            $ddgProcess.Kill()
         }
         $ddgClosed = $true
     } catch { }
 }
-# Last resort: find any window with DuckDuckGo in the title
+
+# Strategy 2: Kill any new PIDs that appeared when we launched the browser
+# (Chromium-based browsers merge into an existing process, so the original PID may not own the window)
+if ($Script:NewBrowserPIDs -and $Script:NewBrowserPIDs.Count -gt 0) {
+    foreach ($bpid in $Script:NewBrowserPIDs) {
+        try {
+            $proc = Get-Process -Id $bpid -ErrorAction SilentlyContinue
+            if ($proc -and -not $proc.HasExited) {
+                # Try Win32 WM_CLOSE first (graceful)
+                if ($proc.MainWindowHandle -ne [IntPtr]::Zero) {
+                    try { [Win32Window]::PostMessage($proc.MainWindowHandle, [Win32Window]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null } catch { }
+                    Start-Sleep -Milliseconds 500
+                }
+                # Force-kill if still alive
+                if (-not $proc.HasExited) {
+                    Stop-Process -Id $bpid -Force -ErrorAction SilentlyContinue
+                }
+                $ddgClosed = $true
+            }
+        } catch { }
+    }
+}
+
+# Strategy 3: Find any browser window with DuckDuckGo in the title
 if (-not $ddgClosed -and $ddgBrowserName) {
     try {
         Get-Process -Name $ddgBrowserName -ErrorAction SilentlyContinue |
             Where-Object { $_.MainWindowTitle -match 'DuckDuckGo' } |
-            ForEach-Object { $_.CloseMainWindow() | Out-Null }
+            ForEach-Object {
+                try {
+                    if ($_.MainWindowHandle -ne [IntPtr]::Zero) {
+                        [Win32Window]::PostMessage($_.MainWindowHandle, [Win32Window]::WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+                    }
+                } catch { }
+            }
         $ddgClosed = $true
     } catch { }
 }
+
 if ($ddgClosed) {
     Write-Host "[Browser] DuckDuckGo window closed." -ForegroundColor DarkGray
+    Write-AuditLog -EventType 'BROWSER_CLOSE' -Source 'Main' -Outcome 'Success' `
+        -Message "DDG browser window closed"
 }
 
 Write-Host "Done." -ForegroundColor Green
