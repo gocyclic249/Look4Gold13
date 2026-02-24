@@ -1,4 +1,4 @@
-# Look4Gold13
+# DEPRECIATED USE THE GNU/LINUX VERSION WILL NOT BE UPDATED WITHOUT GOOD REASON
 
 **AU-13 Publicly Available Content (PAC) scanner for NIST SP 800-53 compliance.**
 
